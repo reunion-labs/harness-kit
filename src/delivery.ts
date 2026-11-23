@@ -1,7 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { collectChanges, EMPTY_TREE_BASE, gitAdminDir, gitRoot, type ChangeSet } from "./git";
+import YAML from "yaml";
+import {
+  collectChanges,
+  EMPTY_TREE_BASE,
+  gitAdminDir,
+  gitRoot,
+  listWorktreeFiles,
+  readFileAtCommit,
+  type ChangeSet,
+} from "./git";
+import { MANIFEST_REL, type Manifest } from "./manifest";
+import {
+  inheritedContextKeys,
+  parseState,
+  readState,
+  STATE_REL,
+  type ContextFreshnessIssue,
+  type HarnessState,
+} from "./state";
 import { readText, sha256 } from "./util";
 import {
   inspectValidationEvidenceFreshness,
@@ -200,6 +218,77 @@ export function stampCoversScope(repoInput: string, scope: ChangeScope): boolean
   if (!stamp.found || stamp.stale || !stamp.valid) return false;
   if (scope.changes.files.length === 0) return stamp.status === "no-change" || stamp.status === "accepted";
   return stamp.status === "accepted" && stamp.fingerprint === scope.changes.fingerprint;
+}
+
+/**
+ * Keys of blocking context-freshness issues that already existed on the task
+ * base (see inheritedContextKeys). The base manifest and review state are read
+ * from the resolved base commit; anything unreadable keeps every issue task-scoped.
+ */
+export function inheritedContextIssueKeys(
+  repo: string,
+  manifest: Manifest,
+  issues: readonly ContextFreshnessIssue[],
+  base: string,
+): Set<string> {
+  if (!issues.some((issue) => issue.severity === "blocking")) return new Set();
+  const changes = collectChanges(repo, base, { mode: "exact" });
+  if (!changes.resolvedBase) return new Set();
+  const manifestText = readFileAtCommit(repo, changes.resolvedBase, MANIFEST_REL);
+  if (manifestText === null) return new Set();
+  const parsed: unknown = YAML.parse(manifestText);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Set();
+  const stateText = readFileAtCommit(repo, changes.resolvedBase, STATE_REL);
+  const baseState: HarnessState | null = stateText ? parseState(stateText) : null;
+  return inheritedContextKeys(
+    issues,
+    { manifest, state: readState(repo) },
+    { manifest: parsed as Manifest, state: baseState },
+    changes.files,
+  );
+}
+
+export interface HarnessTargetLookup {
+  /** `.agents/manifest.yaml` exists directly in the requested directory. */
+  adopted: boolean;
+  /** Nearest ancestor directory inside the same Git worktree that is a Harness target. */
+  enclosing: string | null;
+  /** Harness targets below the requested directory (absolute paths). */
+  nested: string[];
+}
+
+/**
+ * Where Harness targets are relative to `repo`. Prevents a subdirectory or a
+ * monorepo root from being reported as "not adopted" when a target covers it.
+ */
+export function locateHarnessTargets(repoInput: string): HarnessTargetLookup {
+  const repo = resolve(repoInput);
+  if (existsSync(join(repo, MANIFEST_REL))) return { adopted: true, enclosing: null, nested: [] };
+  let root: string;
+  try {
+    root = canonicalTarget(gitRoot(repo));
+  } catch {
+    return { adopted: false, enclosing: null, nested: [] };
+  }
+  let enclosing: string | null = null;
+  for (let dir = canonicalTarget(repo); dir !== root && dirname(dir) !== dir; ) {
+    dir = dirname(dir);
+    if (existsSync(join(dir, MANIFEST_REL))) {
+      enclosing = dir;
+      break;
+    }
+  }
+  let nested: string[] = [];
+  try {
+    const suffix = `/${MANIFEST_REL}`;
+    nested = listWorktreeFiles(repo, `**/${MANIFEST_REL}`)
+      .filter((path) => path.endsWith(suffix))
+      .map((path) => join(repo, path.slice(0, -suffix.length)))
+      .sort();
+  } catch {
+    // Discovery is advisory; the directory itself is still not a Harness target.
+  }
+  return { adopted: false, enclosing, nested };
 }
 
 export function emptyTreeBase(): string {

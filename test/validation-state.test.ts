@@ -223,3 +223,38 @@ test("missing evidence JSON tells an Agent exactly how to create and prove it", 
   assert.ok(body.nextActions.some((action: any) => /deliver/.test(action.commands?.join(" ") ?? "")));
   assert.ok(body.nextActions.some((action: any) => action.id === "optional-install-lifecycle-hooks"));
 });
+
+test("evidence NEXT actions are runnable without a global harness-kit install", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-state-pinned-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  mkdirSync(join(repo, ".agents"), { recursive: true });
+  writeFileSync(
+    join(repo, ".agents/harness.lock.json"),
+    JSON.stringify({
+      schema: "ai-harness/upgrade-state/v1",
+      package: "@erzhe/harness-kit",
+      version: "1.2.3",
+      manifestSpec: "ai-harness/v0",
+      appliedMigrations: ["upgrade-state-v1"],
+    }) + "\n",
+  );
+  const chunks: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  (process.stdout as unknown as { write: (chunk: string | Uint8Array) => boolean }).write = (chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  };
+  let code: number;
+  try {
+    code = evidenceCmd(repo, { json: true });
+  } finally {
+    (process.stdout as unknown as { write: typeof process.stdout.write }).write = original;
+  }
+  assert.equal(code, 1);
+  const body = JSON.parse(chunks.join(""));
+  const record = body.nextActions.find((action: any) => action.id === "record-delivery-evidence");
+  assert.deepEqual(record.commands, [
+    "npx -y @erzhe/harness-kit@1.2.3 deliver --repo .",
+    "npx -y @erzhe/harness-kit@1.2.3 evidence --repo . --json",
+  ]);
+});

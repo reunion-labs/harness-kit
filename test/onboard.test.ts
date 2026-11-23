@@ -123,6 +123,13 @@ test("check-loop prints deliver as the primary finish gate", () => {
   assert.equal(code, 0);
   assert.match(out, /harness-kit deliver/);
   assert.match(out, /accepted/);
+  // A bare harness-kit is usually not on PATH: the skill points at the lock-pinned npx form.
+  assert.match(out, /npx -y @erzhe\/harness-kit@<version from \.agents\/harness\.lock\.json> <cmd>/);
+  assert.match(out, /npx -y @erzhe\/harness-kit@<lock 里的 version> <cmd>/);
+  assert.match(out, /`not-adopted`.*退出码 3.*不要重跑/);
+  assert.match(out, /inheritedContext/);
+  assert.match(out, /harness-kit task-start/);
+  assert.doesNotMatch(out, /task start/);
   assert.match(out, /harness-kit evidence/);
   assert.match(out, /工作区 git diff|worktree/i);
   assert.match(out, /不要求新开会话|不要.*新会话|must not demand a new session/);

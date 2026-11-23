@@ -22,6 +22,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { loadManifest, MANIFEST_REL, validateManifest } from "./manifest";
 import { writeManagedFiles, type ManagedFileInspection } from "./managed-files";
+import { lockedHarnessVersion } from "./harness-cli";
 import { renderTargets } from "./render";
 import { sha256 } from "./util";
 
@@ -1091,7 +1092,7 @@ export function prepareAdoptionCandidate(
   }
 
   const targets: AdoptionCandidateTarget[] = [];
-  for (const [path, content] of renderTargets(manifest)) {
+  for (const [path, content] of renderTargets(manifest, { harnessVersion: lockedHarnessVersion(repoRoot) })) {
     const artifact = join("generated", path);
     const bytes = Buffer.from(content, "utf8");
     privateWriteBundleFile(root, artifact, bytes);
@@ -1276,7 +1277,7 @@ export function assertManagedFileAdoptionReceipt(
   const manifest = loadManifest(repoRoot);
   const errors = validateManifest(manifest).filter((issue) => issue.level === "error");
   if (errors.length) throw new Error(`manifest invalid: ${errors.map((issue) => issue.msg).join("; ")}`);
-  const rendered = renderTargets(manifest);
+  const rendered = renderTargets(manifest, { harnessVersion: lockedHarnessVersion(repoRoot) });
   if (!samePathList(metadata.targets.map((target) => target.path), rendered.map(([path]) => path)))
     throw new Error("current render target list differs from the audited candidate");
   if (!samePathList(inspections.map((inspection) => inspection.relativePath), rendered.map(([path]) => path)))

@@ -128,13 +128,48 @@ test("modules.md renders impact fields and the project-defined validation gate c
 
 test("AGENTS.md always points to deliver; impact map adds stamp/task-start detail", () => {
   const withoutMap = renderAgentsMd(base);
-  assert.match(withoutMap, /harness-kit deliver/);
+  assert.match(withoutMap, /harness-kit@latest deliver/);
 
   const withMap = renderAgentsMd({
     ...base,
     modules: [{ name: "api", role: "r", entry: ["src/a.ts"], owns: ["src/api/**"], checks: ["test"] }],
   });
-  assert.match(withMap, /harness-kit deliver/);
+  assert.match(withMap, /harness-kit@latest deliver/);
   assert.match(withMap, /status=accepted/);
-  assert.match(withMap, /task start/);
+  // `task start` is not a CLI command (commander rejects the extra argument); the command is task-start.
+  assert.match(withMap, /harness-kit@latest task-start/);
+  assert.doesNotMatch(withMap, /task start/);
+});
+
+test("AGENTS.md runnable commands pin the lock version instead of a bare harness-kit", () => {
+  const manifest: Manifest = {
+    ...base,
+    modules: [{ name: "api", role: "r", entry: ["src/a.ts"], owns: ["src/api/**"], checks: ["test"] }],
+    invariants: [{ id: "no-log", rule: "no logs", enforcement: { forbid_pattern: ["x"] } }],
+  };
+  const pinned = renderAgentsMd(manifest, { harnessVersion: "0.7.0" });
+  assert.match(pinned, /Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe\/harness-kit@0\.7\.0 <command>`/);
+  assert.match(pinned, /version pinned by `\.agents\/harness\.lock\.json`/);
+  for (const command of ["deliver", "task-start", "verify", "sync", "install-hooks", "check-loop"])
+    assert.ok(pinned.includes(`\`npx -y @erzhe/harness-kit@0.7.0 ${command}\``), command);
+  // Outside the shared GEN_HEADER comment, the only bare `harness-kit ...` is the placeholder the Harness CLI line defines.
+  const body = pinned.split("\n").filter((line) => !line.startsWith("<!-- GENERATED")).join("\n");
+  const bare = [...body.matchAll(/`harness-kit ([^`]*)`/g)].map((match) => match[1]);
+  assert.deepEqual(bare, ["<command>"]);
+
+  const unpinned = renderAgentsMd(manifest);
+  assert.match(unpinned, /`npx -y @erzhe\/harness-kit@latest deliver`/);
+  assert.match(unpinned, /has no `\.agents\/harness\.lock\.json` version pin yet/);
+
+  // A tampered lock version never reaches a command an Agent would copy into a shell.
+  const tampered = renderAgentsMd(manifest, { harnessVersion: "0.7.0; rm -rf ~" });
+  assert.doesNotMatch(tampered, /rm -rf/);
+  assert.match(tampered, /`npx -y @erzhe\/harness-kit@latest deliver`/);
+});
+
+test("renderTargets threads the pinned version into AGENTS.md only", () => {
+  const targets = new Map(renderTargets(base, { harnessVersion: "1.2.3" }));
+  assert.match(targets.get("AGENTS.md")!, /@erzhe\/harness-kit@1\.2\.3 deliver/);
+  assert.equal(targets.get("CLAUDE.md"), new Map(renderTargets(base)).get("CLAUDE.md"));
+  assert.equal(targets.get(".agents/reference.md"), new Map(renderTargets(base)).get(".agents/reference.md"));
 });

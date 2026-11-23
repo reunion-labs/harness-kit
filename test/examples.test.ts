@@ -56,3 +56,13 @@ test("frontend and Electron gate examples contain real package scripts and execu
   assert.match(readFileSync(join(electron, "e2e", "electron", "ipc.spec.mjs"), "utf8"), /electron\.launch[\s\S]*notes:list|electron\.launch[\s\S]*Load notes/);
 });
 
+
+test("lock-less examples pin every runnable Harness command to the npx @latest form", () => {
+  for (const name of ["cli-tool", "demo-run", "electron-app", "frontend-spa", "npm-lib"]) {
+    const agents = readFileSync(join(ROOT, "examples", name, "AGENTS.md"), "utf8");
+    assert.match(agents, /Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe\/harness-kit@latest <command>`/, name);
+    assert.match(agents, /`npx -y @erzhe\/harness-kit@latest deliver`/, name);
+    // Generator-authored instructions never use a bare harness-kit; declared capabilities render verbatim.
+    assert.doesNotMatch(agents, /`harness-kit (deliver|task start|task-start|check-loop)`|Run `harness-kit verify` to check/, name);
+  }
+});

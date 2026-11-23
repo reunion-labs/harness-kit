@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import { harnessInvocation, lockedHarnessVersion, repoHarnessInvocation } from "../src/harness-cli";
 import { type Manifest } from "../src/manifest";
 import { renderTargets } from "../src/render";
 import {
@@ -47,7 +48,14 @@ function fixture(options: { generated?: boolean; lock?: string; agents?: string;
   writeFileSync(join(repo, ".agents/manifest.yaml"), manifestSource);
   if (options.generated !== false) {
     const manifest = YAML.parse(manifestSource) as Manifest;
-    for (const [path, content] of renderTargets(manifest)) {
+    // Generated entries pin whatever version the fixture lock records (none -> @latest).
+    let harnessVersion: string | null = null;
+    try {
+      harnessVersion = options.lock ? (JSON.parse(options.lock) as { version?: string }).version ?? null : null;
+    } catch {
+      harnessVersion = null;
+    }
+    for (const [path, content] of renderTargets(manifest, { harnessVersion })) {
       mkdirSync(join(repo, path, ".."), { recursive: true });
       writeFileSync(join(repo, path), options.agents && path === "AGENTS.md" ? options.agents : content);
     }
@@ -68,7 +76,8 @@ test("upgrade --check reports a missing durable state without writing", () => {
   assert.equal(report.schema, UPGRADE_REPORT_SCHEMA);
   assert.equal(report.status, "upgrade-available");
   assert.deepEqual(report.pendingMigrations, ["upgrade-state-v1"]);
-  assert.deepEqual(report.changedFiles, [UPGRADE_STATE_REL]);
+  // The lock-less entry says @latest; upgrading pins it, so AGENTS.md is part of the plan.
+  assert.deepEqual(report.changedFiles, ["AGENTS.md", UPGRADE_STATE_REL]);
   assert.equal(report.hooksChanged, false);
   assert.equal(existsSync(join(repo, UPGRADE_STATE_REL)), false);
   assert.equal(readFileSync(join(repo, ".agents/manifest.yaml"), "utf8"), beforeManifest);
@@ -77,10 +86,12 @@ test("upgrade --check reports a missing durable state without writing", () => {
 test("upgrade applies once, preserves manifest bytes, and is current after commit", () => {
   const repo = fixture();
   const beforeManifest = readFileSync(join(repo, ".agents/manifest.yaml"), "utf8");
+  assert.match(readFileSync(join(repo, "AGENTS.md"), "utf8"), /npx -y @erzhe\/harness-kit@latest deliver/);
   const first = upgrade(repo);
   assert.equal(first.status, "upgraded");
-  assert.deepEqual(first.changedFiles, [UPGRADE_STATE_REL]);
+  assert.deepEqual(first.changedFiles, ["AGENTS.md", UPGRADE_STATE_REL]);
   assert.equal(readFileSync(join(repo, ".agents/manifest.yaml"), "utf8"), beforeManifest);
+  assert.ok(readFileSync(join(repo, "AGENTS.md"), "utf8").includes(`npx -y ${PACKAGE}@${TARGET} deliver`));
   const state = JSON.parse(readFileSync(join(repo, UPGRADE_STATE_REL), "utf8")) as UpgradeState;
   assert.deepEqual(state, {
     schema: "ai-harness/upgrade-state/v1",
@@ -108,11 +119,16 @@ test("upgrade refreshes managed generated files together with durable state", ()
 
 test("upgrade advances the package version even when all migrations were already applied", () => {
   const repo = fixture({ lock: initialUpgradeState(PACKAGE, "0.5.0", "ai-harness/v0") });
+  assert.match(readFileSync(join(repo, "AGENTS.md"), "utf8"), /npx -y @erzhe\/harness-kit@0\.5\.0 deliver/);
   const report = upgrade(repo);
   assert.equal(report.status, "upgraded");
   assert.deepEqual(report.pendingMigrations, []);
-  assert.deepEqual(report.changedFiles, [UPGRADE_STATE_REL]);
+  // Entry commands are re-pinned in the same transaction as the lock.
+  assert.deepEqual(report.changedFiles, ["AGENTS.md", UPGRADE_STATE_REL]);
   assert.equal((JSON.parse(readFileSync(join(repo, UPGRADE_STATE_REL), "utf8")) as UpgradeState).version, TARGET);
+  const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+  assert.ok(agents.includes(`npx -y ${PACKAGE}@${TARGET} deliver`));
+  assert.doesNotMatch(agents, /@0\.5\.0/);
 });
 
 test("upgrade leaves repository lifecycle hook bytes untouched", () => {
@@ -204,8 +220,24 @@ test("CLI JSON reports incomplete verification after applying instead of losing 
     verification: { doctor: { exitCode: number } };
   };
   assert.equal(report.status, "incomplete");
-  assert.deepEqual(report.changedFiles, [UPGRADE_STATE_REL]);
+  assert.deepEqual(report.changedFiles, ["AGENTS.md", UPGRADE_STATE_REL]);
   assert.equal(report.verification.doctor.exitCode, 1);
   assert.equal(existsSync(join(repo, UPGRADE_STATE_REL)), true);
   assert.equal(result.stdout.trim().split("\n").length, 1);
+});
+
+test("lockedHarnessVersion reads only a well-formed lock for this package", () => {
+  const pinned = fixture({ lock: initialUpgradeState(PACKAGE, "0.5.1", "ai-harness/v0") });
+  assert.equal(lockedHarnessVersion(pinned), "0.5.1");
+  assert.equal(repoHarnessInvocation(pinned), "npx -y @erzhe/harness-kit@0.5.1");
+
+  assert.equal(lockedHarnessVersion(fixture()), null);
+  assert.equal(repoHarnessInvocation(fixture()), "npx -y @erzhe/harness-kit@latest");
+  assert.equal(lockedHarnessVersion(fixture({ lock: "not json\n" })), null);
+  assert.equal(lockedHarnessVersion(fixture({ lock: initialUpgradeState("@example/other", "0.5.1", "ai-harness/v0") })), null);
+  // A version that is not plain semver never becomes part of a runnable command.
+  const injected = fixture({ lock: initialUpgradeState(PACKAGE, "0.5.1 && curl evil", "ai-harness/v0") });
+  assert.equal(lockedHarnessVersion(injected), null);
+  assert.equal(harnessInvocation("0.5.1 && curl evil"), "npx -y @erzhe/harness-kit@latest");
+  assert.equal(harnessInvocation("1.0.0-rc.1"), "npx -y @erzhe/harness-kit@1.0.0-rc.1");
 });

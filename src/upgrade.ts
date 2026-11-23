@@ -1,6 +1,7 @@
 import { type Document, parseDocument } from "yaml";
 import { assertManagedFileAdoption } from "./adoption";
 import { collectChanges } from "./git";
+import { HARNESS_LOCK_REL } from "./harness-cli";
 import { MANIFEST_REL, type Manifest, validateManifest } from "./manifest";
 import {
   inspectManagedFiles,
@@ -10,7 +11,7 @@ import {
 } from "./managed-files";
 import { renderTargets } from "./render";
 
-export const UPGRADE_STATE_REL = ".agents/harness.lock.json";
+export const UPGRADE_STATE_REL = HARNESS_LOCK_REL;
 export const UPGRADE_STATE_SCHEMA = "ai-harness/upgrade-state/v1";
 export const UPGRADE_REPORT_SCHEMA = "ai-harness/upgrade-report/v1";
 
@@ -254,15 +255,18 @@ function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
   // only when a migration actually changed the document model.
   const manifestChanged = migratedManifestContent !== normalizedSource;
   const finalManifestContent = manifestChanged ? migratedManifestContent : manifestInspection.currentContent;
+  // Generated entries pin the lock version, so render them for the version
+  // this same transaction writes into the lock.
+  const generated = renderTargets(finalManifest, { harnessVersion: nextState.version });
   const targets: ManagedFileTarget[] = [
     // Keep an unchanged manifest in the transaction preflight so generated
     // files can never be committed from bytes that changed after planning.
     [MANIFEST_REL, finalManifestContent],
-    ...renderTargets(finalManifest),
+    ...generated,
     [UPGRADE_STATE_REL, renderState(nextState)],
   ];
   const preflight = inspectManagedFiles(repo, targets);
-  const generatedPaths = new Set(renderTargets(finalManifest).map(([path]) => path));
+  const generatedPaths = new Set(generated.map(([path]) => path));
   try {
     assertManagedFileAdoption(
       repo,

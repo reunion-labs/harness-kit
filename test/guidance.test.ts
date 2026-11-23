@@ -73,3 +73,18 @@ test("active Hooks need no lifecycle action and stale evidence is repaired befor
   assert.deepEqual(stale.map((action) => action.id), ["refresh-stale-delivery-evidence"]);
   assert.equal(stale[0]?.when, "before-finish");
 });
+
+test("action commands use the caller's runnable CLI invocation", () => {
+  const missing: AgentHookStatus = { state: "degraded", configuredAgents: [], issues: ["runner is missing"] };
+  const pinned = buildHarnessGuidance({
+    manifest,
+    hooks: missing,
+    evidence: { found: false },
+    cli: "npx -y @erzhe/harness-kit@1.2.3",
+  });
+  const commands = pinned.nextActions.flatMap((action) => action.commands);
+  assert.ok(commands.length > 0);
+  assert.ok(commands.every((command) => command.startsWith("npx -y @erzhe/harness-kit@1.2.3 ")), commands.join("\n"));
+  // Default stays the historical bare form for API callers that do not pass a CLI.
+  assert.ok(buildHarnessGuidance({ manifest }).nextActions[0]!.commands[0]!.startsWith("harness-kit "));
+});

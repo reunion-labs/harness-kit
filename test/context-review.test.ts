@@ -5,9 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Manifest } from "../src/manifest";
 import {
+  inheritedContextKeys,
   inspectContextFreshness,
+  readState,
   recordContextReview,
   resolveKnowledgePath,
+  type ContextFreshnessIssue,
 } from "../src/state";
 
 function write(repo: string, rel: string, content: string): void {
@@ -161,4 +164,83 @@ test("missing bound sources can neither be recorded nor treated as current", () 
   );
   assert.match(issue?.reason ?? "", /绑定源文件缺失/);
   assert.deepEqual(issue?.changedSources, ["src/api.ts"]);
+});
+
+test("freshness issues carry a stable machine-readable code", () => {
+  const { repo, manifest } = fixture();
+  assert.deepEqual(inspectContextFreshness(repo, manifest).map((issue) => issue.code), ["review-missing", "review-missing"]);
+  recordContextReview(repo, manifest, { path: "engineering/handbook/api.md", reason: "reviewed" });
+  recordContextReview(repo, manifest, { path: "knowledge/policy.md", reason: "reviewed" });
+  write(repo, "src/api.ts", "export const route = '/v2/users';\n");
+  assert.deepEqual(inspectContextFreshness(repo, manifest).map((issue) => issue.code), ["sources-changed", "sources-changed"]);
+  write(repo, ".agents/knowledge/policy.md", "Never log tokens or cookies.\n");
+  assert.equal(
+    inspectContextFreshness(repo, manifest).find((issue) => issue.key === "knowledge:agents:knowledge/policy.md")?.code,
+    "content-changed",
+  );
+  unlinkSync(join(repo, "src/api.ts"));
+  assert.ok(inspectContextFreshness(repo, manifest).every((issue) => issue.code === "source-missing"));
+});
+
+test("inheritedContextKeys only downgrades blocking issues whose inputs the task left untouched", () => {
+  const { repo, manifest } = fixture();
+  recordContextReview(repo, manifest, { path: "engineering/handbook/api.md", reason: "reviewed" });
+  recordContextReview(repo, manifest, { path: "knowledge/policy.md", reason: "reviewed" });
+  const state = readState(repo);
+  write(repo, "src/api.ts", "export const route = '/v2/users';\n"); // already stale on the base
+  const issues = inspectContextFreshness(repo, manifest);
+  const API = "knowledge:repo:engineering/handbook/api.md";
+  const POLICY = "knowledge:agents:knowledge/policy.md";
+  const same = { manifest, state };
+  const keys = (set: Set<string>) => [...set].sort();
+
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, same, ["src/unrelated.ts"])), [POLICY, API]);
+  // The task changed a bound source: the staleness is the task's own work.
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, same, ["src/api.ts"])), []);
+  // The task edited one knowledge document (root=agents resolves under .agents/).
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, same, [".agents/knowledge/policy.md"])), [API]);
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, same, ["engineering/handbook/api.md"])), [POLICY]);
+
+  // The task changed the manifest declaration of one item.
+  const baseManifest: Manifest = structuredClone(manifest);
+  baseManifest.knowledge![1].binds = ["src/api.ts", "src/legacy.ts"];
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, { manifest: baseManifest, state }, [])), [API]);
+
+  // The task changed one review record; the other record is byte-identical, so it stays inherited.
+  const baseState = structuredClone(state)!;
+  baseState.reviews![POLICY] = { ...baseState.reviews![POLICY], reason: "older review" };
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, { manifest, state: baseState }, [])), [API]);
+
+  // No manifest on the base (the task adopts Harness): nothing can be inherited.
+  assert.deepEqual(keys(inheritedContextKeys(issues, same, { manifest: null, state: null }, [])), []);
+});
+
+test("inheritedContextKeys treats directory knowledge targets by prefix and ignores advisory issues", () => {
+  const manifest: Manifest = {
+    spec: "ai-harness/v0",
+    identity: { name: "dir", summary: "dir" },
+    knowledge: [{ path: "knowledge/journal/", authority: "review", binds: ["src/a.ts"] }],
+    modules: [{ name: "core", role: "r", entry: ["src/core.ts"] }],
+  };
+  const journal: ContextFreshnessIssue = {
+    key: "knowledge:agents:knowledge/journal/",
+    kind: "knowledge",
+    target: "knowledge/journal/",
+    severity: "blocking",
+    code: "sources-changed",
+    reason: "stale",
+    changedSources: ["src/a.ts"],
+  };
+  const legacy: ContextFreshnessIssue = {
+    key: "module:core",
+    kind: "module",
+    target: "core",
+    severity: "advisory",
+    code: "legacy-baseline-changed",
+    reason: "legacy",
+    changedSources: ["src/core.ts"],
+  };
+  const view = { manifest, state: null };
+  assert.deepEqual([...inheritedContextKeys([journal, legacy], view, view, ["README.md"])], [journal.key]);
+  assert.deepEqual([...inheritedContextKeys([journal], view, view, [".agents/knowledge/journal/2026-01-01-adr.md"])], []);
 });

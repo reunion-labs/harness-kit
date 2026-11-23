@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +9,12 @@ import { syncCmd } from "../src/commands/sync";
 import { loadManifest } from "../src/manifest";
 import { renderClaudeMd } from "../src/render";
 import { recordContextReview } from "../src/state";
+import { verifyCmd } from "../src/commands/verify";
+
+function gitCommit(repo: string, message: string): void {
+  execFileSync("git", ["add", "."], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=Harness Test", "-c", "user.email=harness@example.test", "commit", "-qm", message], { cwd: repo });
+}
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -257,4 +263,84 @@ test("verify JSON stays structured when an Agent hook config path is not a regul
   assert.equal(result.body.schema, "ai-harness/verify-report/v1");
   assert.equal(result.body.hooks.state, "degraded");
   assert.ok(result.body.hooks.issues.some((issue: string) => /safe project-local regular file/.test(issue)));
+});
+
+function pinLock(repo: string, version: string): void {
+  write(
+    repo,
+    ".agents/harness.lock.json",
+    JSON.stringify({
+      schema: "ai-harness/upgrade-state/v1",
+      package: "@erzhe/harness-kit",
+      version,
+      manifestSpec: "ai-harness/v0",
+      appliedMigrations: ["upgrade-state-v1"],
+    }) + "\n",
+  );
+}
+
+function captureVerify(repo: string, opts: Parameters<typeof verifyCmd>[1]): { code: number; body: any } {
+  const chunks: string[] = [];
+  const original = process.stdout.write.bind(process.stdout);
+  (process.stdout as unknown as { write: (chunk: string | Uint8Array) => boolean }).write = (chunk) => {
+    chunks.push(String(chunk));
+    return true;
+  };
+  try {
+    const code = verifyCmd(repo, { ...opts, json: true });
+    return { code, body: JSON.parse(chunks.join("")) };
+  } finally {
+    (process.stdout as unknown as { write: typeof process.stdout.write }).write = original;
+  }
+}
+
+test("a task base downgrades only inherited context drift; plain verify stays strict", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-verify-inherited-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  write(repo, "src/api.ts", "export const route = '/v1';\n");
+  write(repo, "engineering/api.md", "The route is /v1.\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    `spec: ai-harness/v0
+identity: { name: context, summary: context fixture }
+knowledge:
+  - root: repo
+    path: engineering/api.md
+    authority: derived
+    binds: [src/api.ts]
+`,
+  );
+  syncCmd(repo);
+  recordContextReview(repo, loadManifest(repo), { path: "engineering/api.md", reason: "checked" });
+  gitCommit(repo, "reviewed");
+  write(repo, "src/api.ts", "export const route = '/v2';\n");
+  gitCommit(repo, "mainline change without review");
+
+  const strict = captureVerify(repo, { recordManualEvidence: false });
+  assert.equal(strict.code, 1);
+  assert.equal(strict.body.context[0].inherited, undefined);
+
+  const taskScoped = captureVerify(repo, { recordManualEvidence: false, contextBase: "HEAD" });
+  assert.equal(taskScoped.code, 0, JSON.stringify(taskScoped.body.messages));
+  assert.equal(taskScoped.body.context[0].key, "knowledge:repo:engineering/api.md");
+  assert.equal(taskScoped.body.context[0].inherited, true);
+  assert.equal(taskScoped.body.context[0].code, "sources-changed");
+  assert.ok(taskScoped.body.messages.some((m: any) => m.level === "warn" && /inherited: already stale on task base HEAD/.test(m.text)));
+
+  // The same drift introduced after the task base is the task's own failure.
+  const base = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd: repo, encoding: "utf8" }).trim();
+  assert.equal(captureVerify(repo, { recordManualEvidence: false, contextBase: base }).code, 1);
+});
+
+test("verify NEXT action commands use the lock-pinned invocation", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-verify-pinned-"));
+  write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: pinned, summary: pinned }\n");
+  pinLock(repo, "1.2.3");
+  syncCmd(repo);
+  const result = runVerify(repo);
+  assert.equal(result.status, 0, result.stdout);
+  const commands = result.body.nextActions.flatMap((action: any) => action.commands);
+  assert.ok(commands.length > 0);
+  assert.ok(commands.every((command: string) => command.startsWith("npx -y @erzhe/harness-kit@1.2.3 ")), commands.join("\n"));
 });

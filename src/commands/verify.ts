@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { DEFAULT_COMMAND_TIMEOUT_MS, readBaseline, runCapture } from "../contracts";
+import { inheritedContextIssueKeys } from "../delivery";
 import { runEnforcement } from "../enforce";
 import {
   buildHarnessGuidance,
@@ -7,6 +8,7 @@ import {
   type VerificationGapDetail,
   type VerificationGapSummary,
 } from "../guidance";
+import { lockedHarnessVersion, repoHarnessInvocation } from "../harness-cli";
 import { inspectAgentHookStatus, type AgentHookStatus } from "../hook-status";
 import { loadManifest, validateManifest, type Manifest } from "../manifest";
 import { inspectManagedFiles } from "../managed-files";
@@ -21,6 +23,12 @@ export interface VerifyOpts {
   recordManualEvidence?: boolean;
   json?: boolean;
   details?: boolean;
+  /**
+   * Task base (deliver / execute-mode Stop only). Blocking context-freshness
+   * issues whose inputs this task did not touch are reported as inherited
+   * maintenance instead of failures. Plain `verify` stays strict.
+   */
+  contextBase?: string;
 }
 
 interface CheckResult {
@@ -104,7 +112,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
   const messages: VerifyMessage[] = [];
   let manifestErrors: string[] = [];
   const hooks = safeInspectAgentHookStatus(repo);
-  const guidance = buildHarnessGuidance({ manifest, hooks });
+  const guidance = buildHarnessGuidance({ manifest, hooks, cli: repoHarnessInvocation(repo) });
   const gaps = guidance.gapDetails.map((gap) => gap.legacyText);
 
   const emit = (level: VerifyMessage["level"], text: string): void => {
@@ -184,7 +192,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
 
   emit("info", "1) Generated files in sync");
   try {
-    for (const inspection of inspectManagedFiles(repo, renderTargets(manifest))) {
+    for (const inspection of inspectManagedFiles(repo, renderTargets(manifest, { harnessVersion: lockedHarnessVersion(repo) }))) {
       if (inspection.kind === "missing") {
         emit("error", `${inspection.relativePath} missing (run \`harness-kit sync\`)`);
         failures++;
@@ -201,14 +209,29 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
 
   emit("info", "\n2) Context freshness");
   try {
-    for (const issue of inspectContextFreshness(repo, manifest)) {
-      context.push(issue);
+    const issues = inspectContextFreshness(repo, manifest);
+    let inherited = new Set<string>();
+    if (opts.contextBase !== undefined) {
+      try {
+        inherited = inheritedContextIssueKeys(repo, manifest, issues, opts.contextBase);
+      } catch (error) {
+        emit("warn", `cannot compare context freshness with task base ${opts.contextBase}; treating it as task-scoped (${(error as Error).message})`);
+      }
+    }
+    for (const issue of issues) {
       const changed = issue.changedSources.length ? ` -> ${issue.changedSources.join(", ")}` : "";
       const message = `${issue.key}: ${issue.reason}${changed}`;
-      if (issue.severity === "blocking") {
+      if (issue.severity === "blocking" && inherited.has(issue.key)) {
+        context.push({ ...issue, inherited: true });
+        emit("warn", `${message} (inherited: already stale on task base ${opts.contextBase}; not introduced by this task)`);
+      } else if (issue.severity === "blocking") {
+        context.push(issue);
         failures++;
         emit("error", message);
-      } else emit("warn", message);
+      } else {
+        context.push(issue);
+        emit("warn", message);
+      }
     }
   } catch (error) {
     failures++;

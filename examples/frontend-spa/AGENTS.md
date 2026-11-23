@@ -6,16 +6,18 @@
 
 ## Working agreement (read first)
 
-`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; `.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. Do NOT edit those files by hand — edit the manifest and run `harness-kit sync`. Knowledge is hand-authored; `.agents/hooks/` is managed by `harness-kit install-hooks`.
+Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe/harness-kit@latest <command>` (no global install needed; this repository has no `.agents/harness.lock.json` version pin yet).
+
+`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; `.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. Do NOT edit those files by hand — edit the manifest and run `npx -y @erzhe/harness-kit@latest sync`. Knowledge is hand-authored; `.agents/hooks/` is managed by `npx -y @erzhe/harness-kit@latest install-hooks`.
 
 Before you touch code:
 1. Post a **Task Brief** in chat: what you'll change, which change-type it is, which layers/files it touches, and how you'll verify.
 2. Read the relevant files before editing. Do NOT full-repo grep and guess.
-   Prefer `harness-kit task start` before editing so committed work stays in the deliver scope.
+   Prefer `npx -y @erzhe/harness-kit@latest task-start` before editing so committed work stays in the deliver scope.
 
 Before you finish:
-3. Run `harness-kit deliver` (impact-driven checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means the task is done. If `needs-work`, fix and re-run — do not claim completion without an accepted stamp.
-   Optional: `harness-kit task start` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.
+3. Run `npx -y @erzhe/harness-kit@latest deliver` (impact-driven checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means the task is done. If `needs-work`, fix and re-run — do not claim completion without an accepted stamp.
+   Optional: `npx -y @erzhe/harness-kit@latest task-start` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.
 4. Read `NEXT ACTIONS` (or JSON `nextActions`): complete every `required | agent` action automatically before finishing; ask the user only for a `required | human` decision. Defer `recommended` maintenance during unrelated product work.
 5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention one only when it is relevant to this task.
 6. If you learned something an agent could not infer from code (a gotcha, a decision, a fix), update the registered knowledge source in place, or add new Harness-owned knowledge under `.agents/knowledge/` (a journal ADR for decisions). Never move/copy an existing repo document just to fit a folder name. Do NOT record one-off noise or anything already obvious from the code.
@@ -55,13 +57,13 @@ Downstream: 终端用户浏览器, CDN（构建产物托管）
 - 不得硬编码 API 地址，须读 VITE_API_BASE_URL [enforced]
 - 交互元素需可键盘访问、有 aria 标签 [manual]
 
-Run `harness-kit verify` to check the enforceable ones.
+Run `npx -y @erzhe/harness-kit@latest verify` to check the enforceable ones.
 
 ## Knowledge & maps (load on demand)
 
 - Harness-owned domain / conventions / decisions: `.agents/knowledge/`
 - Full commands, environment, and registered knowledge catalog: `.agents/reference.md`
 - Module map + common pitfalls: `.agents/modules.md`
-- Implement -> verify loop (deep guide): run `harness-kit check-loop`
+- Implement -> verify loop (deep guide): run `npx -y @erzhe/harness-kit@latest check-loop`
 - Tooling adoption log (earn heavier tooling): `.agents/adoption.md`
 - Task playbooks: `.agents/playbooks/`
