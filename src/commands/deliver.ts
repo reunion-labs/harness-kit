@@ -188,7 +188,7 @@ function reportHuman(report: DeliverReport, cli: string): void {
   info("");
   if (report.status === "accepted") ok("deliver: ACCEPTED — task stamp is valid for this fingerprint");
   else if (report.status === "no-change") ok("deliver: NO-CHANGE — no pending worktree changes to accept");
-  else err("deliver: NEEDS-WORK — fix failures and re-run harness-kit deliver");
+  else err(`deliver: NEEDS-WORK — fix failures and re-run ${cli} deliver`);
   if (report.next.length) {
     info("\nNEXT");
     for (const step of report.next) info(`  - ${step}`);

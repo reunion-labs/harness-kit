@@ -143,6 +143,7 @@ modules:
     pitfalls:
       - AGENTS.md 要保持精简，别把 routing/modules 全文塞进去
       - sync / verify / doctor / adoption 必须用同一个 lock 版本渲染，upgrade 用目标版本渲染，否则入口会被判为漂移
+      - 固定 Working agreement 控制在 240 词内（有测试）；GEN_HEADER 不写版本也不写裸命令，改它时旧 CLAUDE.md stub 靠 isHarnessGenerated 的精确 stub 识别才能继续被刷新
   - name: enforce
     role: 声明式不变量执行（确定性，无 LLM）
     entry: ["src/enforce.ts"]
@@ -186,6 +187,8 @@ modules:
       - 手动 evidence 的整体 valid 也要求同指纹 verifyPassed，run-checks 单独通过只算 runChecksValid
       - 任务验收优先用 deliver；隐式 HEAD 的 no-change 不能证明已 commit 任务范围，应用 task start / --base
       - evidence 的 hookActive / lifecycle 默认看最近的 lifecycle 会话而不是 latest 指针；显式 --session 只看该会话
+      - SessionStart 新建会话不得移动 manual latest 指针，否则会话前仍覆盖当前改动的 deliver 戳会被藏掉
+      - check 进程的 HARNESS_KIT_BASE / HARNESS_KIT_CHANGED_FILES 由 run-checks 注入，外层同名变量必须先清掉
   - name: delivery
     role: 任务 scope 解析、deliver 编排与 delivery stamp
     entry: ["src/delivery.ts", "src/commands/deliver.ts"]
@@ -199,6 +202,7 @@ modules:
       - stamp 只写 Git admin 私有状态，读取时必须 freshness 重算
       - 继承的 context 过期只在本任务没碰它的输入（binds/entry、知识文档、manifest 声明、state 复核记录）时降为 maintenance；独立 verify 仍严格
       - 目录没有 manifest 时先找祖先和嵌套 target：祖先存在就要求到 target 根重跑，否则 not-adopted（exit 3），不写任何证据
+      - stamp 按 target 读取（inspectDeliveryStamp / coveringStampEvidence 不能用 gitRoot），否则嵌套 target 读到外层 target 的戳
   - name: agent-hooks
     role: Claude Code / Cursor / Codex 的 SessionStart + Stop 生命周期门禁
     entry: ["src/commands/hook-event.ts"]
@@ -221,6 +225,8 @@ modules:
       - ACTIVE evidence 必须绑定 SessionStart 时的 runner/client-config 指纹；合法 override 或配置变化后旧证据也只能 DEGRADED
       - Hook 配置渲染依据的旧字节必须绑定同一次事务 preflight；并发更新要失败并保留新内容
       - 用户分发器登记必须最后写入；ACTIVE 指纹只绑定 Harness managed 用户入口，不得被无关第三方用户 Hook 变化污染
+      - Hook 失败兜底文案不写裸 harness-kit；改兜底文案时把旧文案加进 LEGACY_HOOK_FAILURE_MESSAGES，否则已装配置会被当成第三方条目而重复安装
+      - Stop 拦截文案写被门禁 target 的绝对 --repo，不能写 --repo .
   - name: managed-generation
     role: 生成文件接管、软链接边界与事务写入
     entry: ["src/managed-files.ts"]
@@ -236,6 +242,10 @@ modules:
       - declared/unverified 不能命名成 verified；本地 hash 没有外部身份信任根
       - sync 不得写 .agents/.harness-state.json；语义新鲜度只由 record-context-review 推进
       - candidate 必须绑定 landing 落点（.agents 下手写文件 + root=repo knowledge）；只排除 manifest、生成入口、adoption/、hooks/、state、lock 这些已另行绑定或属于机器状态的文件
+      - 引用闭包只把找不到仓内文件的纯路径提及降级为 unresolved（进 candidate hash、apply 时重比）；链接 / @import 缺失或在仓外、以及存在但不安全的目标仍 fail closed
+      - 生成物判定统一走 isHarnessGenerated（生成标记开头或精确 CLAUDE.md stub），不要再各处写 startsWith(marker)
+      - sync --adopt-existing 必须带 candidate+audit，只要会写入就核对回执，没有 legacy 入口也一样；只有纯 no-op 跳过
+      - init 起步 manifest 按 go.mod / Cargo.toml / package.json 推断，不得退回固定 JS 模板；默认带 diff_check + validation.defaults.no_match
   - name: repository-upgrade
     role: 平台无关的版本迁移规划、确定性状态与事务应用
     entry: ["src/upgrade.ts", "src/commands/upgrade.ts"]

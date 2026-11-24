@@ -345,3 +345,51 @@ test("coveringStampEvidence returns the deliver evidence only while its stamp co
   write(repo, "src/core.ts", "export const value = 3;\n");
   assert.equal(coveringStampEvidence(repo, resolveChangeScope(repo)), null);
 });
+
+test("a nested target's deliver report carries that target's own stamp, not the enclosing root's", () => {
+  const repo = fixture("", (root) => {
+    write(
+      root,
+      "packages/app/.agents/manifest.yaml",
+      `spec: ai-harness/v0
+identity: { name: app, summary: nested app }
+capabilities:
+  test: { run: "true" }
+modules:
+  - name: app
+    role: nested fixture
+    entry: [src/app.ts]
+    owns: [src/**]
+    tests: [test/**]
+    checks: [test]
+`,
+    );
+    write(root, "packages/app/src/app.ts", "export const app = 1;\n");
+    write(root, "packages/app/test/app.test.ts", "// app coverage\n");
+    syncCmd(join(root, "packages/app"));
+  });
+  // The root target has an accepted stamp of its own.
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  const root = captureJson(() => deliverCmd(repo, { json: true }));
+  assert.equal(root.json.status, "accepted", JSON.stringify(root.json.errors));
+
+  write(repo, "packages/app/src/app.ts", "export const app = 2;\n");
+  write(repo, "packages/app/test/app.test.ts", "// covers app 2\n");
+  const app = captureJson(() => deliverCmd(join(repo, "packages/app"), { json: true }));
+  assert.equal(app.json.status, "accepted", JSON.stringify(app.json.errors));
+  assert.equal(app.json.stamp.status, "accepted");
+  assert.equal(app.json.stamp.fingerprint, app.json.fingerprint);
+  assert.notEqual(app.json.stamp.session, root.json.stamp.session);
+});
+
+test("evidence text always closes with the hook proof line, also without any hooks installed", () => {
+  const repo = fixture();
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(captureJson(() => deliverCmd(repo, { json: true })).json.status, "accepted");
+  const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
+  assert.match(text, /stamp source: deliver\/manual — this record is not hook proof; see "hook proof" below/);
+  assert.match(text, /session intercept: none/);
+  assert.match(text, /hook proof \(hookActive\): no/);
+});

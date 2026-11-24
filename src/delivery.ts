@@ -198,7 +198,10 @@ export function stampFromEvidence(repo: string, session: ValidationSession | nul
 }
 
 export function inspectDeliveryStamp(repoInput: string): DeliveryStamp {
-  const repo = gitRoot(repoInput);
+  // Stamps are keyed by Harness target, and a nested target is not the Git
+  // root; reading the root's pointer would report the enclosing target's stamp.
+  const repo = canonicalTarget(repoInput);
+  gitRoot(repo); // still fail on a non-Git target, as before
   try {
     return stampFromEvidence(repo, readLatestValidationSession(repo));
   } catch (error) {
@@ -224,7 +227,7 @@ export function stampCoversScope(repoInput: string, scope: ChangeScope): boolean
 export function coveringStampEvidence(repoInput: string, scope: ChangeScope): ValidationEvidence | null {
   if (!stampCoversScope(repoInput, scope)) return null;
   try {
-    return readLatestValidationSession(gitRoot(repoInput))?.lastEvidence ?? null;
+    return readLatestValidationSession(canonicalTarget(repoInput))?.lastEvidence ?? null;
   } catch {
     return null;
   }

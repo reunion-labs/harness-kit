@@ -126,6 +126,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
             found: false,
             hooks,
             hookActive: lifecycle?.active ?? false,
+            hookActiveSource: lifecycle?.active ? "lifecycle" : null,
             lifecycle,
             nextActions: guidance.nextActions,
           },
@@ -161,6 +162,13 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   const hookConfigurationCurrent = session.agent !== "manual" && !!session.hookConfigFingerprint &&
     agentHookConfigurationFingerprint(repo, session.agent) === session.hookConfigFingerprint;
   const hookActive = (valid && hookConfigurationCurrent) || (lifecycle?.active ?? false);
+  // Top-level agent / hookConfigurationCurrent describe the latest record (often
+  // a manual deliver); say which source actually proved the hooks.
+  const hookActiveSource: "lifecycle" | "latest-record" | null = lifecycle?.active
+    ? "lifecycle"
+    : valid && hookConfigurationCurrent
+      ? "latest-record"
+      : null;
   const stamp: DeliveryStamp = inspectDeliveryStamp(repo);
   const guidance = buildHarnessGuidance({
     hooks,
@@ -173,6 +181,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     valid,
     stamp,
     hookActive,
+    hookActiveSource,
     hookConfigurationCurrent,
     lifecycle,
     stale,
@@ -195,7 +204,8 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   else err(evidence.status);
   info(`session: ${session.token}`);
   info(`agent: ${session.agent}`);
-  if (session.agent === "manual") info("stamp source: deliver/manual (not a lifecycle hook proof)");
+  if (session.agent === "manual")
+    info("stamp source: deliver/manual — this record is not hook proof; see \"hook proof\" below");
   info(`base: ${evidence.requestedBase} -> ${evidence.resolvedBase ?? "empty tree"}`);
   info(`fingerprint: ${evidence.fingerprint}`);
   if (session.initialDirty.length) info(`dirty at task/session start: ${session.initialDirty.join(", ")}`);
@@ -218,6 +228,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   } else {
     info("session intercept: none (cooperative deliver only)");
   }
+  info(`hook proof (hookActive): ${hookActive ? `yes, from the ${hookActiveSource === "lifecycle" ? "lifecycle session" : "latest record"}` : "no"}`);
   const requiredActions = guidance.nextActions.filter((action) => action.priority === "required");
   printNextActions(requiredActions);
   if (!valid) warn(`Delivery stamp: NOT READY (${requiredActions.length} required action(s) above)`);

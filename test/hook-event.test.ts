@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,7 +109,11 @@ test("thin Stop without SessionStart asks for deliver, never a new session", () 
   assert.equal(claude.status, 0);
   assert.equal(JSON.parse(claude.stdout).decision, "block");
   // The block reason must be runnable without a global install: the lock-pinned npx form.
-  assert.match(JSON.parse(claude.stdout).reason, /Run: npx -y @erzhe\/harness-kit@1\.2\.3 deliver --repo \./);
+  // It names the gated root explicitly: from a nested target's directory, `--repo .` would deliver the wrong target.
+  assert.ok(
+    JSON.parse(claude.stdout).reason.includes(`Run: npx -y @erzhe/harness-kit@1.2.3 deliver --repo ${realpathSync(repo)}\n`),
+    JSON.parse(claude.stdout).reason,
+  );
   assert.doesNotMatch(JSON.parse(claude.stdout).reason, /Start a new agent session|SessionStart baseline/);
 
   const cursor = hook(repo, "cursor", "stop", { conversation_id: "no-session-start" });
@@ -190,6 +194,12 @@ test("default thin Stop leaves lifecycle proof: SessionStart, each Stop, and the
 
   body = evidenceJson(repo);
   assert.equal(body.hookActive, true, JSON.stringify(body.lifecycle));
+  // The latest record is the manual deliver; the proof comes from the lifecycle session.
+  assert.equal(body.agent, "manual");
+  assert.equal(body.hookActiveSource, "lifecycle");
+  const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
+  assert.match(text, /this record is not hook proof/);
+  assert.match(text, /hook proof \(hookActive\): yes, from the lifecycle session/);
   assert.equal(body.lifecycle.stop.decision, "allow");
   assert.equal(body.lifecycle.stop.reason, "stamp");
   assert.equal(body.lifecycle.evidenceSource, "deliver-stamp");
@@ -249,6 +259,26 @@ test("thin Stop allows clean trees and accepted deliver stamps", () => {
   const allowed = hook(repo, "claude", "stop", { session_id: "dirty-1" });
   assert.equal(allowed.status, 0);
   assert.equal(allowed.stdout.trim(), "");
+});
+
+test("a SessionStart after an accepted worktree deliver does not hide the stamp that still covers the change", () => {
+  const repo = fixture();
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  // Delivered before any session existed: worktree scope, base HEAD.
+  const delivered = spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" });
+  assert.equal(delivered.status, 0, delivered.stderr + delivered.stdout);
+  assert.equal(JSON.parse(delivered.stdout).scope, "worktree");
+
+  // SessionStart records a task at the same base; the same change stays accepted.
+  assert.equal(hook(repo, "claude", "session-start", { session_id: "after-deliver" }).status, 0);
+  const stop = hook(repo, "claude", "stop", { session_id: "after-deliver" });
+  assert.equal(stop.status, 0);
+  assert.equal(stop.stdout.trim(), "", stop.stdout);
+
+  // A further change still needs a new deliver.
+  write(repo, "src/extra.ts", "export const extra = 1;\n");
+  assert.equal(JSON.parse(hook(repo, "claude", "stop", { session_id: "after-deliver" }).stdout).decision, "block");
 });
 
 test("execute mode: SessionStart base + Stop runs checks without demanding a new session", () => {

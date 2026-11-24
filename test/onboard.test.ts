@@ -161,3 +161,26 @@ test("onboard audits migrated rules where they landed and settles writing-princi
   assert.match(out, /告诉审计者同一判定标准/);
   assert.match(out, /何时上报负责人\*\*：.*A 接受门禁配置.*B 缩小或去掉该声明/);
 });
+
+test("onboard covers unresolved mentions, no-legacy adoption, hot-loaded hooks, and declaration accuracy", () => {
+  const { out } = captureStdout(onboardCmd);
+  // H18: bare-path mentions that resolve nowhere go to the auditor instead of blocking adoption.
+  assert.match(out, /链接和 `@path` 解析不到会 fail closed/);
+  assert.match(out, /`candidate\.json` 的 `unresolved` 列出找不到仓内文件的纯路径提及/);
+  assert.match(out, /逐条判定 `unresolved`/);
+  // H21: a repository without legacy entries never runs a plain sync before the audit.
+  assert.match(out, /仓库\*\*没有\*\* legacy 入口时不要运行普通 `sync`/);
+  // H19: the session gate is installed last and delivered immediately.
+  assert.match(out, /会话门禁是接入的\*\*最后一个改动\*\*/);
+  assert.match(out, /绝不在等待异步盲审时安装/);
+  assert.match(out, /热加载进当前会话/);
+  // H25 / H27 / H28 / H29 / H32 / H33.
+  assert.match(out, /`scope_out` 会渲染成 “Out of scope \(do NOT modify here\)”，只放本仓\*\*不得修改\*\*的东西/);
+  assert.match(out, /`breaking_needs` 只在仓库真的给接口发版本号时填写/);
+  assert.match(out, /`forbid_pattern` 是不带 flag 的 JS 正则，逐行匹配/);
+  assert.match(out, /\*\*文字说明必须与实际覆盖面一致\*\*/);
+  assert.match(out, /可选的模块 upstream\/downstream 依赖图没有机器校验/);
+  assert.match(out, /`\.agents\/\.harness-state\.json`，必须和其他接入文件一起提交/);
+  // H23: incremental-only rules use the injected task diff.
+  assert.match(out, /`HARNESS_KIT_BASE`.*`HARNESS_KIT_CHANGED_FILES`/);
+});

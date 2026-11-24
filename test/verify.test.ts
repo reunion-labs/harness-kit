@@ -113,7 +113,7 @@ contracts:
   const compact = runVerifyText(repo);
   assert.equal(compact.status, 0, compact.stderr + compact.stdout);
   assert.match(compact.stdout, /6 declared: 2 automation improvement\(s\), 4 check\(s\) only when relevant/);
-  assert.match(compact.stdout, /details: `harness-kit verify --details`/);
+  assert.match(compact.stdout, /details: `npx -y @erzhe\/harness-kit@latest verify --details`/);
   assert.doesNotMatch(compact.stdout, /Add enforcement for invariant missing-gate/);
   // Hooks are optional recommended maintenance; deliver is the task gate.
   assert.match(compact.stdout, /Harness readiness: READY|recommended maintenance/);

@@ -190,3 +190,61 @@ test("hook and onboarding help describe the default thin Stop and the pinned ver
   assert.match(onboard.stdout, /pins this exact\s+version/);
   assert.doesNotMatch(onboard.stdout, /always\s+latest/);
 });
+
+function initStarter(files: Record<string, string>): { repo: string; manifest: string } {
+  const repo = mkdtempSync(join(tmpdir(), "hk-cli-init-starter-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
+  const result = spawnSync(TSX, [CLI, "init", "--repo", repo, "--name", "starter"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return { repo, manifest: readFileSync(join(repo, ".agents/manifest.yaml"), "utf8") };
+}
+
+test("init starts a Go repository from Go commands, not the JS template", () => {
+  const { repo, manifest } = initStarter({ "go.mod": "module example.com/svc\n\ngo 1.22\n", "main.go": "package main\n\nfunc main() {}\n" });
+  assert.match(manifest, /Starter commands detected from Go \(go\.mod\)/);
+  assert.match(manifest, /test: \{ run: "go test \.\/\.\.\." \}/);
+  assert.match(manifest, /vet: \{ run: "go vet \.\/\.\.\." \}/);
+  assert.doesNotMatch(manifest, /pnpm|no-console-log|src\/\*\*|harness-kit verify/);
+  assert.match(manifest, /^invariants: \[\]$/m);
+  assert.match(manifest, /no_match: \[diff_check\]/);
+
+  // A fresh starter is deliverable: a change outside every module still selects a real check.
+  execFileSync("git", ["add", "."], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=Harness Test", "-c", "user.email=harness@example.test", "commit", "-qm", "init"], { cwd: repo });
+  writeFileSync(join(repo, "main.go"), "package main\n\nfunc main() { println(1) }\n");
+  const checks = spawnSync(TSX, [CLI, "run-checks", "--repo", repo, "--base", "HEAD", "--json"], { encoding: "utf8" });
+  const report = JSON.parse(checks.stdout);
+  assert.deepEqual(report.passed, ["diff_check"], checks.stdout);
+  assert.ok(!report.gaps.some((gap: { kind: string }) => gap.kind === "no-checks-selected"));
+});
+
+test("init reads the package manager and real scripts of a Node repository", () => {
+  const { manifest } = initStarter({
+    "package.json": JSON.stringify({ scripts: { build: "tsc", test: 'echo "Error: no test specified" && exit 1', lint: "eslint ." } }),
+    "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    "src/index.ts": "export {};\n",
+  });
+  assert.match(manifest, /Starter commands detected from pnpm \(package\.json\)/);
+  assert.match(manifest, /setup: \{ run: "pnpm install" \}/);
+  assert.match(manifest, /build: \{ run: "pnpm build" \}/);
+  assert.match(manifest, /lint: \{ run: "pnpm lint" \}/);
+  // npm's placeholder test script always fails, so it is not offered as a check.
+  assert.doesNotMatch(manifest, /test: \{ run:/);
+  assert.match(manifest, /id: no-console-log/);
+
+  const npm = initStarter({ "package.json": JSON.stringify({ scripts: { test: "node --test" } }), "package-lock.json": "{}\n" }).manifest;
+  assert.match(npm, /setup: \{ run: "npm ci" \}/);
+  assert.match(npm, /test: \{ run: "npm test" \}/);
+  // No src/ tree: the src/** examples would match nothing.
+  assert.match(npm, /^invariants: \[\]$/m);
+});
+
+test("init without a known build file declares only the diff check and asks for real commands", () => {
+  const { manifest } = initStarter({ "README.md": "# docs only\n" });
+  assert.match(manifest, /Starter commands detected from no known build file/);
+  assert.match(manifest, /^capabilities:\n  diff_check: \{ run: "git diff --check \$\{HARNESS_KIT_BASE:-HEAD\}" \}$/m);
+});
