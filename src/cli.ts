@@ -231,7 +231,7 @@ program
 
 program
   .command("install-hooks")
-  .description("install git hooks and/or agent SessionStart + Stop hooks (run-checks + verify gate)")
+  .description("install git hooks and/or agent SessionStart + Stop hooks (Stop requires an accepted deliver stamp)")
   .option("-C, --repo <dir>", "target repo dir (default: current directory)")
   .option("--git", "install git hooks (default when no selector given)")
   .option("--stop", "install agent SessionStart + Stop hooks (Claude Code / Cursor / Codex)")
@@ -258,7 +258,7 @@ program
 
 program
   .command("onboard")
-  .description("print the erzhe-harness-init skill for an agent to follow (use via npx, always latest)")
+  .description("print the erzhe-harness-init skill for an agent to follow (pins this exact version)")
   .action(() => guard(() => onboardCmd()));
 
 program

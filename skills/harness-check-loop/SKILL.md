@@ -54,10 +54,10 @@ harness-kit deliver --repo .
 
 ## 与 Hook 的关系
 
-- **Stop Hook 默认 thin**：没有匹配 stamp 就 block，并提示跑 `deliver`（不要求新开会话）
+- **Stop Hook 默认 thin**：没有匹配 stamp 就 block，并提示跑 `deliver`（不要求新开会话）。每次 Stop 都记进该会话的 lifecycle 证据；放行时绑定它接受的 deliver 戳，所以 `evidence --json` 的 `hookActive` / `lifecycle` 能证明门禁真的执行过
 - `HARNESS_KIT_STOP_MODE=execute` 时 Stop 内直接重跑验收（兼容旧行为）
 - **没装 Hook 也能闭环**：靠 AGENTS 协议 + deliver；Git/CI 再兜底
-- 不要把 `hookActive` 当成交付成功标准
+- 不要把 `hookActive` 当成交付成功标准：交付看 deliver 的 `accepted`，`hookActive` 只说明 Hook 门禁在这个会话里生效过
 
 ## 红线
 

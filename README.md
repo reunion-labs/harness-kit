@@ -14,6 +14,8 @@ harness-kit 把仓库的工程知识（这是什么、怎么跑、什么不能�
 Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard，然后严格按输出执行。
 ```
 
+入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.7.1`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
+
 就这一句。Agent 会：
 
 1. 拉取最新版的 onboard skill
@@ -107,7 +109,9 @@ harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 | `not-adopted` | 3 | 该目录未接入 harness-kit：不要重跑，按仓库自身规范验收 |
 
 Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block，并提示跑 `deliver`——**不再要求新开会话**。  
-`HARNESS_KIT_STOP_MODE=execute` 可恢复 Stop 内直接重跑验收。
+`HARNESS_KIT_STOP_MODE=execute` 可恢复 Stop 内直接重跑验收。这个模式只由运行 Agent 的进程环境变量决定，目前没有项目级配置。
+
+每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。
 
 诚实边界：没有宿主 Stop / Supervisor 时，会话级强制 Loop 做不到；此时靠 AGENTS 协议 + `deliver` +（可选）Git/CI。Hook 观测（`CONFIGURED/ACTIVE`）是旁路，不是交付成功标准。
 
@@ -128,14 +132,14 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 | `harness-kit upgrade [--check] [--json]` | 把仓库原地升级到当前运行 CLI 版本；确定性迁移 + 生成物刷新 + doctor/verify，不访问 registry/CI/代码托管，也不改 Hook |
 | `harness-kit task-start` | 记录本 worktree 任务 base（可选；SessionStart 也会写） |
 | `harness-kit deliver` | **任务验收入口**：scope → run-checks + verify → stamp |
-| `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE 及它们显式引用的文档证据和确定性候选，不改仓内文件 |
+| `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE 及它们显式引用的文档证据、规则迁移后的落点（`.agents/` 下的 knowledge / checks 等和 `root: repo` 文档）和确定性候选，不改仓内文件 |
 | `harness-kit record-adoption-audit` | 把声明的 pass/fail、理由和审计报告 hash 绑定到一版候选 |
 | `harness-kit sync --adopt-existing --candidate ... --audit ...` | 首次接管：只有 live legacy、候选、manifest 和 pass receipt 逐字节一致才事务写入 |
-| `harness-kit doctor [--details]` | 体检：完整性 / 路径引用 / 漂移 / 新鲜度 / 体量预算；默认折叠无需马上处理的边界 |
+| `harness-kit doctor [--details]` | 体检：完整性 / 路径引用 / 影响面 glob 零命中（逐个 owns / tests glob）/ 漂移 / 新鲜度 / 体量预算；默认折叠无需马上处理的边界 |
 | `harness-kit verify [--json] [--details]` | 门禁：跑不变量 + 契约 + 漂移，给出分类后的下一步；失败非 0 退出 |
 | `harness-kit accept-contract` | 有意变更接口后，记录新的契约指纹为基线 |
 | `harness-kit install-hooks` | 可选装原生 Git hooks；共享 worktree、自定义/全局路径或第三方 hook 时安全拒绝 |
-| `harness-kit install-hooks --stop --agents <client>` | 只给实际使用的客户端装生命周期门禁：会话开始记基线，结束前跑 `run-checks` + `verify` |
+| `harness-kit install-hooks --stop --agents <client>` | 只给实际使用的客户端装生命周期门禁：会话开始记基线；结束时默认要求当前改动有 accepted deliver 戳（execute 模式改为重跑 `run-checks` + `verify`），每次 Stop 都留 lifecycle 证据 |
 | `harness-kit install-hooks --stop --agents codex --allow-user-dispatcher` | Codex linked-worktree fallback：保留已有用户 Hook，安装一个惰性分发器并只登记当前 worktree |
 | `harness-kit plan-checks` | 只看本次改动会影响哪些模块、该跑什么、还有哪些验证缺口 |
 | `harness-kit run-checks` | 真正执行本次改动对应的检查，并保存可追溯证据 |
@@ -156,7 +160,7 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 
 默认文本只展开当前必须处理的动作；`--details` 展开全部声明，`--json` 提供 `gapDetails`、`gapSummary` 和 `nextActions` 给 Agent 稳定执行。`verify: OK` 表示声明的确定性门禁已通过；只有同时显示 `Harness readiness: READY`，才表示 Lifecycle Hook 等初始化收尾也已完成。
 
-首次接管是一个窄状态机，不靠 Agent 记住长说明：`init` 保存将被接管的旧入口 → `prepare-adoption` 在仓外收集原地 guidance 并生成候选 → 独立 Agent 盲审 → `record-adoption-audit` 绑定报告 → 带 candidate/receipt 的 `sync --adopt-existing` 才能写真实入口。manifest、旧入口、snapshot/index、嵌套入口/显式引用文档、候选文件或审计报告任一变化，旧回执立即失效；裸 `--adopt-existing` 不能接管。回执明确写 `assurance: declared`、`independence: unverified`：它能强制顺序和准确字节，不能在没有外部身份系统时伪装证明“审计者一定独立、语义判断一定正确”。
+首次接管是一个窄状态机，不靠 Agent 记住长说明：`init` 保存将被接管的旧入口 → `prepare-adoption` 在仓外收集原地 guidance、规则落点并生成候选 → 独立 Agent 盲审 → `record-adoption-audit` 绑定报告 → 带 candidate/receipt 的 `sync --adopt-existing` 才能写真实入口。盲审者在 bundle 的 `landing/` 里就能核对每条旧规则迁到了哪里，不需要另附副本。manifest、旧入口、snapshot/index、嵌套入口/显式引用文档、落点、候选文件或审计报告任一变化，旧回执立即失效；裸 `--adopt-existing` 不能接管。回执明确写 `assurance: declared`、`independence: unverified`：它能强制顺序和准确字节，不能在没有外部身份系统时伪装证明“审计者一定独立、语义判断一定正确”。
 
 ## 实现之后，怎么保证真的验收了
 
@@ -170,7 +174,7 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 
 项目接入时，由 Agent 根据模块风险提议策略，人来 review：默认只是提醒；公共接口、核心逻辑等关键模块再设为强制。已有真实 E2E 的用户可见边界应把 manifest 升到 `ai-harness/v1` 后声明为 gate；这样只认识 v0 的旧 CLI 会拒绝，而不会静默忽略。没有真实 runner 或用例时，必须把具体人工旅程持久化为 `invariants[].manual: true` 并从相关模块 playbook/pitfall 指向它，不能只在聊天里留一句 GAP，更不能编造命令或空 glob。每次结果会落到当前 worktree 的私有 Git 状态里，`harness-kit evidence` 随时可查。只有“没补测试 / 模块暂时没测试 / 必需范围未映射”这三类覆盖缺口可豁免；检查没跑、配置写坏、gate 边界失效、Git 对比失败等系统问题不能绕过。豁免只对当前代码指纹有效，代码一变就失效。
 
-注意：客户端显示“hook 已安装”不等于它真的执行过。`doctor` / `verify --json` 的 Hook 状态会区分：有效配置齐全但尚无新会话证据是 `CONFIGURED`；当前 hook evidence 两道门都过、并且 SessionStart 绑定的完整有效配置指纹仍与现场完全一致，才是 `ACTIVE`；runner 缺失、配置残缺、配置/override/分发器/登记改变、证据失败或 stale 都是 `DEGRADED`。`evidence` JSON 的 `hookActive` 使用同一配置绑定；交付证据本身仍可能有效，但它不会继续替另一版 Hook 配置背书。Codex linked worktree 必须显式使用 `--allow-user-dispatcher`；Cursor 的部分 headless/cloud surface 仍可能不触发生命周期 hooks，CLI 不会伪造成功。
+注意：客户端显示“hook 已安装”不等于它真的执行过。`doctor` / `verify --json` 的 Hook 状态会区分：有效配置齐全但尚无新会话证据是 `CONFIGURED`；最近一个 hook 会话的门禁证据有效（execute 模式下 Stop 自己跑的两道门，或 thin 模式下 Stop 接受的 deliver 戳），并且 SessionStart 绑定的完整有效配置指纹仍与现场完全一致，才是 `ACTIVE`；runner 缺失、配置残缺、配置/override/分发器/登记改变、证据失败或 stale、最近一次 thin Stop 拦截都是 `DEGRADED`。`evidence` JSON 的 `hookActive` 使用同一配置绑定；交付证据本身仍可能有效，但它不会继续替另一版 Hook 配置背书。Codex linked worktree 必须显式使用 `--allow-user-dispatcher`；Cursor 的部分 headless/cloud surface 仍可能不触发生命周期 hooks，CLI 不会伪造成功。
 
 普通 worktree 的 Agent Hook 只写项目内普通文件：runner 与所选客户端配置会先整组预检，再事务写入，最终路径及父目录都不能是软链接。已有 JSON 的 `hooks` 结构无法安全合并、或 runner 属于第三方时，整组拒绝且不留半套文件；`--force` 也不会覆盖第三方 runner。合法的第三方 hook 数组条目会原样保留，只替换与安装器生成的 runner、Agent、事件和失败兜底完整匹配的 Harness 命令；仅仅在注释里出现 marker 不算我们的 Hook。
 

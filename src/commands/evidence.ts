@@ -2,12 +2,79 @@ import { inspectDeliveryStamp, type DeliveryStamp } from "../delivery";
 import { buildHarnessGuidance, type HarnessNextAction } from "../guidance";
 import { repoHarnessInvocation } from "../harness-cli";
 import { agentHookConfigurationFingerprint, inspectAgentHookStatus, type AgentHookStatus } from "../hook-status";
-import { inspectValidationEvidenceFreshness, readLatestValidationSession, readValidationSession } from "../validation-state";
+import {
+  inspectValidationEvidenceFreshness,
+  readLatestHookValidationSession,
+  readLatestValidationSession,
+  readValidationSession,
+  type HookAgent,
+  type StopObservation,
+  type ValidationSession,
+} from "../validation-state";
 import { err, info, ok, warn } from "../util";
 
 export interface EvidenceOpts {
   json?: boolean;
   session?: string;
+}
+
+/** What the installed lifecycle hooks have demonstrably done for one Agent session. */
+export interface LifecycleProof {
+  agent: Exclude<HookAgent, "manual">;
+  session: string;
+  sessionStartedAt: string;
+  baseSha: string | null;
+  /** The runner and client config bound at SessionStart are still the installed ones. */
+  configurationCurrent: boolean;
+  /** Latest Stop observed for this session; null when no Stop has run since SessionStart. */
+  stop: StopObservation | null;
+  /** run-checks: execute-mode Stop ran the gates; deliver-stamp: a thin Stop accepted this deliver stamp. */
+  evidenceSource: "run-checks" | "deliver-stamp" | null;
+  /** That gate evidence passed run-checks + verify and still matches the current change. */
+  evidenceValid: boolean;
+  /** Same rule as the ACTIVE hook state: current configuration and valid gate evidence. */
+  active: boolean;
+}
+
+function lifecycleProof(repo: string, session: ValidationSession | null): LifecycleProof | null {
+  if (!session || session.agent === "manual") return null;
+  const configurationCurrent =
+    !!session.hookConfigFingerprint && agentHookConfigurationFingerprint(repo, session.agent) === session.hookConfigFingerprint;
+  const evidence = session.lastEvidence;
+  let evidenceValid = false;
+  if (evidence) {
+    const runChecksStatus = evidence.runChecksStatus ?? (evidence.ok ? evidence.status : "not-verified");
+    evidenceValid =
+      runChecksStatus !== "not-verified" && evidence.verifyPassed === true && !inspectValidationEvidenceFreshness(repo, evidence).stale;
+  }
+  return {
+    agent: session.agent,
+    session: session.token,
+    sessionStartedAt: session.createdAt,
+    baseSha: session.baseSha,
+    configurationCurrent,
+    stop: session.lastStop ?? null,
+    evidenceSource: evidence ? evidence.source ?? "run-checks" : null,
+    evidenceValid,
+    active: configurationCurrent && evidenceValid,
+  };
+}
+
+function safeLifecycleProof(repo: string, session: ValidationSession | null | undefined): LifecycleProof | null {
+  try {
+    return lifecycleProof(repo, session === undefined ? readLatestHookValidationSession(repo) : session);
+  } catch {
+    return null;
+  }
+}
+
+function describeLifecycle(lifecycle: LifecycleProof | null): string {
+  if (!lifecycle) return "lifecycle: no SessionStart recorded by an installed hook";
+  const stop = lifecycle.stop
+    ? `last Stop ${lifecycle.stop.decision} (${lifecycle.stop.mode}, ${lifecycle.stop.reason}) at ${lifecycle.stop.at}`
+    : "no Stop observed yet";
+  const config = lifecycle.configurationCurrent ? "" : "; hook configuration changed since SessionStart";
+  return `lifecycle: ${lifecycle.agent} session started ${lifecycle.sessionStartedAt}; ${stop}${config}; hookActive: ${lifecycle.active ? "yes" : "no"}`;
 }
 
 function safeHookStatus(repo: string): AgentHookStatus {
@@ -46,18 +113,29 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     return 1;
   }
   const hooks = safeHookStatus(repo);
+  // An explicit --session is reported on its own; otherwise lifecycle proof
+  // comes from the latest hook session, which a thin Stop never makes "latest".
+  const lifecycle = safeLifecycleProof(repo, opts.session ? session : undefined);
   if (!session?.lastEvidence) {
     const guidance = buildHarnessGuidance({ hooks, evidence: { found: false }, cli: repoHarnessInvocation(repo) });
     if (opts.json) {
       process.stdout.write(
         JSON.stringify(
-          { schema: "ai-harness/evidence/v1", found: false, hooks, nextActions: guidance.nextActions },
+          {
+            schema: "ai-harness/evidence/v1",
+            found: false,
+            hooks,
+            hookActive: lifecycle?.active ?? false,
+            lifecycle,
+            nextActions: guidance.nextActions,
+          },
           null,
           2,
         ) + "\n",
       );
     } else {
       warn("no validation evidence recorded for this worktree/session");
+      info(describeLifecycle(lifecycle));
       printNextActions(guidance.nextActions.filter((action) => action.priority === "required"));
       warn(`Harness readiness: INCOMPLETE (${guidance.nextActions.filter((action) => action.priority === "required").length} required action(s) above)`);
     }
@@ -82,7 +160,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   const valid = runChecksValid && evidence.verifyPassed === true;
   const hookConfigurationCurrent = session.agent !== "manual" && !!session.hookConfigFingerprint &&
     agentHookConfigurationFingerprint(repo, session.agent) === session.hookConfigFingerprint;
-  const hookActive = valid && hookConfigurationCurrent;
+  const hookActive = (valid && hookConfigurationCurrent) || (lifecycle?.active ?? false);
   const stamp: DeliveryStamp = inspectDeliveryStamp(repo);
   const guidance = buildHarnessGuidance({
     hooks,
@@ -96,6 +174,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     stamp,
     hookActive,
     hookConfigurationCurrent,
+    lifecycle,
     stale,
     currentFingerprint,
     currentPlanFingerprint,
@@ -135,6 +214,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   }
   if (hooks.configuredAgents.length) {
     info(`session intercept: ${hooks.state} (configured: ${hooks.configuredAgents.join(",")})`);
+    info(describeLifecycle(lifecycle));
   } else {
     info("session intercept: none (cooperative deliver only)");
   }

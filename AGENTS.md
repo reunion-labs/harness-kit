@@ -6,18 +6,18 @@ AI-friendly repo harness CLI —— 把工程知识变成 agent 可消费的 man
 
 ## Working agreement (read first)
 
-Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe/harness-kit@0.7.0 <command>` (version pinned by `.agents/harness.lock.json`; no global install needed).
+Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe/harness-kit@0.7.1 <command>` (version pinned by `.agents/harness.lock.json`; no global install needed).
 
-`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; `.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. Do NOT edit those files by hand — edit the manifest and run `npx -y @erzhe/harness-kit@0.7.0 sync`. Knowledge is hand-authored; `.agents/hooks/` is managed by `npx -y @erzhe/harness-kit@0.7.0 install-hooks`.
+`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; `.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. Do NOT edit those files by hand — edit the manifest and run `npx -y @erzhe/harness-kit@0.7.1 sync`. Knowledge is hand-authored; `.agents/hooks/` is managed by `npx -y @erzhe/harness-kit@0.7.1 install-hooks`.
 
 Before you touch code:
 1. Post a **Task Brief** in chat: what you'll change, which change-type it is, which layers/files it touches, and how you'll verify.
 2. Find your change-type in `.agents/routing.md` and read the files it points to. Do NOT full-repo grep and guess.
-   Prefer `npx -y @erzhe/harness-kit@0.7.0 task-start` before editing so committed work stays in the deliver scope.
+   Prefer `npx -y @erzhe/harness-kit@0.7.1 task-start` before editing so committed work stays in the deliver scope.
 
 Before you finish:
-3. Run `npx -y @erzhe/harness-kit@0.7.0 deliver` (impact-driven checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means the task is done. If `needs-work`, fix and re-run — do not claim completion without an accepted stamp.
-   Optional: `npx -y @erzhe/harness-kit@0.7.0 task-start` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.
+3. Run `npx -y @erzhe/harness-kit@0.7.1 deliver` (impact-driven checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means the task is done. If `needs-work`, fix and re-run — do not claim completion without an accepted stamp.
+   Optional: `npx -y @erzhe/harness-kit@0.7.1 task-start` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.
 4. Read `NEXT ACTIONS` (or JSON `nextActions`): complete every `required | agent` action automatically before finishing; ask the user only for a `required | human` decision. Defer `recommended` maintenance during unrelated product work.
 5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention one only when it is relevant to this task.
 6. If you learned something an agent could not infer from code (a gotcha, a decision, a fix), update the registered knowledge source in place, or add new Harness-owned knowledge under `.agents/knowledge/` (a journal ADR for decisions). Never move/copy an existing repo document just to fit a folder name. Do NOT record one-off noise or anything already obvious from the code.
@@ -53,7 +53,7 @@ Downstream: 任何被 harness 初始化的仓库
 - 命令模块统一走 util 的 ok/err/warn/info，不直接 console.log [enforced]
 - 所有生成物顶部必须带 DO-NOT-EDIT 头（由 GEN_HEADER 保证） [manual]
 
-Run `npx -y @erzhe/harness-kit@0.7.0 verify` to check the enforceable ones.
+Run `npx -y @erzhe/harness-kit@0.7.1 verify` to check the enforceable ones.
 
 ## Knowledge & maps (load on demand)
 
@@ -61,6 +61,6 @@ Run `npx -y @erzhe/harness-kit@0.7.0 verify` to check the enforceable ones.
 - Full commands, environment, and registered knowledge catalog: `.agents/reference.md`
 - Change-type routing (read before editing): `.agents/routing.md`
 - Module map + common pitfalls: `.agents/modules.md`
-- Implement -> verify loop (deep guide): run `npx -y @erzhe/harness-kit@0.7.0 check-loop`
+- Implement -> verify loop (deep guide): run `npx -y @erzhe/harness-kit@0.7.1 check-loop`
 - Tooling adoption log (earn heavier tooling): `.agents/adoption.md`
 - Task playbooks: `.agents/playbooks/`

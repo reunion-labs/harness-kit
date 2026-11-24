@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolveChangeScope, stampCoversScope, startTaskRecord } from "../delivery";
+import { coveringStampEvidence, resolveChangeScope, startTaskRecord } from "../delivery";
 import { collectChanges, EMPTY_TREE_BASE, gitRoot } from "../git";
 import { repoHarnessInvocation } from "../harness-cli";
 import { agentHookConfigurationFingerprint } from "../hook-status";
@@ -7,9 +7,12 @@ import {
   clearValidationEvidence,
   markLatestVerifyResult,
   readValidationSession,
+  recordStopObservation,
   startValidationSession,
   validationSessionToken,
   type HookAgent,
+  type StopObservation,
+  type ValidationEvidence,
 } from "../validation-state";
 import { deliverCmd } from "./deliver";
 import { runChecksCmd, type RunChecksReport } from "./run-checks";
@@ -140,16 +143,46 @@ function failureMessage(report: RunChecksReport | null, verifyOutput: string, to
   return lines.join("\n");
 }
 
-function thinStop(repo: string, agent: HookEventOpts["agent"]): number {
+/**
+ * Lifecycle proof is best-effort bookkeeping: it must never change the Stop
+ * decision, and a Stop without a SessionStart session records nothing.
+ */
+function observeStop(
+  repo: string,
+  token: string,
+  observation: Omit<StopObservation, "at">,
+  evidence?: ValidationEvidence | null,
+): void {
+  try {
+    recordStopObservation(repo, token, { at: new Date().toISOString(), ...observation }, evidence);
+  } catch {
+    // Unwritable Git admin state only loses the observation.
+  }
+}
+
+function thinStop(repo: string, agent: HookEventOpts["agent"], id: string): number {
   const cli = repoHarnessInvocation(repo);
+  const token = validationSessionToken(agent, id);
   let scope;
   try {
     scope = resolveChangeScope(repo);
   } catch (error) {
+    observeStop(repo, token, { mode: "thin", decision: "block", reason: "scope-error" }, null);
     return block(agent, "stop", deliverBlockMessage(cli, `cannot resolve changes: ${(error as Error).message}`));
   }
-  if (scope.changes.files.length === 0) return allow(agent);
-  if (stampCoversScope(repo, scope)) return allow(agent);
+  const fingerprint = scope.changes.fingerprint;
+  if (scope.changes.files.length === 0) {
+    observeStop(repo, token, { mode: "thin", decision: "allow", reason: "clean", fingerprint }, null);
+    return allow(agent);
+  }
+  // The accepted deliver stamp this Stop relied on becomes the session's gate
+  // evidence, so the default thin mode can prove the gate (hookActive / ACTIVE).
+  const stamp = coveringStampEvidence(repo, scope);
+  if (stamp) {
+    observeStop(repo, token, { mode: "thin", decision: "allow", reason: "stamp", fingerprint }, { ...stamp, source: "deliver-stamp" });
+    return allow(agent);
+  }
+  observeStop(repo, token, { mode: "thin", decision: "block", reason: "no-stamp", fingerprint }, null);
   return block(
     agent,
     "stop",
@@ -235,7 +268,14 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   } catch (error) {
     return block(agent, "stop", deliverBlockMessage(cli, `could not persist verify result: ${(error as Error).message}`));
   }
-  if (run.code === 0 && report?.ok && verifyPassed && evidencePersisted) return allow(agent);
+  const passed = run.code === 0 && !!report?.ok && verifyPassed && evidencePersisted;
+  observeStop(repo, token, {
+    mode: "execute",
+    decision: passed ? "allow" : "block",
+    reason: "checks",
+    ...(report?.fingerprint ? { fingerprint: report.fingerprint } : {}),
+  });
+  if (passed) return allow(agent);
   const verifyDetails = [
     verify.code === 0 ? "" : verify.output.trim(),
     finalFingerprintError,
@@ -297,6 +337,6 @@ export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {
 
   if (opts.agent === "cursor" && ["aborted", "error"].includes(payload.status ?? "")) return allow(opts.agent);
 
-  if (stopMode() === "thin") return thinStop(repo, opts.agent);
+  if (stopMode() === "thin") return thinStop(repo, opts.agent, id);
   return executeStop(repo, opts.agent, id);
 }

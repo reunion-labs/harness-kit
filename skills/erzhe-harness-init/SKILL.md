@@ -11,13 +11,13 @@ CLI 只负责机械骨架、确定性生成与门禁；**理解仓库、分析�
 
 ## 0. 定位 harness-kit 命令
 
-按可用性择一，后续统一用 `harness-kit` 指代（包名 `@erzhe/harness-kit`，bin 是 `harness-kit`）：
+harness-kit 只经 npx 分发，不全局安装，PATH 上通常没有 `harness-kit`。整个接入只用**一个明确版本**，下文的 `harness-kit <cmd>` 都指这条调用（包名 `@erzhe/harness-kit`）：
 
-- **推荐（零安装、永远最新）**：`npx -y @erzhe/harness-kit@latest`
-- 已全局安装：`harness-kit`
-- 在 harness-kit 仓内开发：`pnpm exec tsx src/cli.ts`
+- **首次接入**：用打印本 Skill 的那个版本，即输出顶部的 `npx -y @erzhe/harness-kit@<version>`。入口可以是 `npx -y @erzhe/harness-kit@latest onboard`，但之后每条命令都写这个具体版本，不再写 `@latest`。`init` 会把它记进 `.agents/harness.lock.json`，生成的 `AGENTS.md` 也会钉住它。
+- **仓库已有 `.agents/harness.lock.json`**（重新接入、维护）：一律用 lock 钉住的版本，与 `AGENTS.md` 里 “Harness CLI” 那一行一致。换版本只能通过 `upgrade`，不要混用版本。
+- 在 harness-kit 源码仓内开发：`pnpm exec tsx src/cli.ts`（源码仓里 npx 会被同名本地包遮蔽）。
 
-先跑一次 `--help` 确认可用。全程用同一种方式，别混用版本。
+先跑一次 `--help` 确认可用。
 
 ## 1. 首次接入前：全量盘点与保真
 
@@ -84,8 +84,8 @@ harness-kit init --repo .
    ```sh
    harness-kit prepare-adoption --repo . --out <external-empty-candidate-dir>
    ```
-   bundle 会私有保存 managed legacy byte/mode/link 证据、所有嵌套入口与递归显式引用文档的 guidance 证据、manifest/index 证据和确定性生成候选（AGENTS/CLAUDE/reference/routing/modules），但**不会写真实入口或复制业务文档到仓内**。`sync` 仍然只根据 manifest 重生成确定性文件；它不分析仓库、不更新业务或 knowledge 文档、不决定规则语义。
-4. 在宣布首次接入完成前，派一个**全新、独立的 agent/context 做 blind audit（盲审）**：先只给 bundle 内的 legacy 证据和生成候选，不给 preservation ledger、迁移结论或预期答案；让审计者独立枚举旧规则并检查每条是否保留，把报告写到仓库外，之后才与 ledger 对账。
+   bundle 会私有保存 managed legacy byte/mode/link 证据、所有嵌套入口与递归显式引用文档的 guidance 证据、manifest/index 证据、确定性生成候选（`generated/`：AGENTS/CLAUDE/reference/routing/modules），以及规则迁移后的**落点证据**（`landing/`：`.agents/` 下手写的 knowledge、checks、playbooks、contracts 基线等，和 `root: repo` 登记的原地文档）。落点与其他证据一起进入 candidate hash；apply 时逐字节复核，盲审后再改落点会让回执失效。它**不会写真实入口或复制业务文档到仓内**。`sync` 仍然只根据 manifest 重生成确定性文件；它不分析仓库、不更新业务或 knowledge 文档、不决定规则语义。
+4. 在宣布首次接入完成前，派一个**全新、独立的 agent/context 做 blind audit（盲审）**：只给 bundle 目录（legacy、guidance、`generated/` 候选和 `landing/` 落点），不给 preservation ledger、迁移结论或预期答案，也不要另附 bundle 之外的“落点副本”。让审计者独立枚举旧规则，逐条在 `generated/` 或 `landing/` 里找到落点并判断是否保留，把报告写到仓库外，之后才与 ledger 对账。审计说明里同时写明下面“写作原则与门禁配置”的判定标准，避免审计者把机器门禁误判为违反旧原则。
 5. 发现明确缺口时，审计者给 `fail`，当前 agent 自动修 manifest/knowledge/ledger、重新运行 context review，并用**新的空目录**重新 `prepare-adoption`，再交给新的独立上下文重审；旧 bundle/receipt 不得复用。**清晰缺口的修复和复审不找用户代劳**，循环到无明确缺口。
 6. 只有规则含义、authority 或冲突取舍存在语义歧义时才升级给用户；得到决定后写入 ledger 并再次盲审。
 7. **盲审通过后**，先把“声明通过”的报告绑定到这一版候选，再用同一对证据接管：
@@ -93,7 +93,16 @@ harness-kit init --repo .
    harness-kit record-adoption-audit --repo . --candidate <candidate-dir> --verdict pass --report <external-audit-report> --reason "<review result>" --out <external-receipt>
    harness-kit sync --repo . --adopt-existing --candidate <candidate-dir> --audit <external-receipt>
    ```
-   apply 时 CLI 会重新发现并核对 live legacy、snapshot/index、guidance inventory/bytes/mode/topology、manifest、候选每个字节和报告 hash；任一变化都让回执 stale。receipt 的 `assurance=declared`、`independence=unverified` 只证明顺序和字节绑定，**不冒充 Agent 身份或语义判断质量**。没有精确 pass receipt 的裸 `--adopt-existing` 必须失败。以后入口已带 managed header，日常只用普通 `sync`。
+   apply 时 CLI 会重新发现并核对 live legacy、snapshot/index、guidance inventory/bytes/mode/topology、落点 inventory/bytes/mode、manifest、候选每个字节和报告 hash；任一变化都让回执 stale。receipt 的 `assurance=declared`、`independence=unverified` 只证明顺序和字节绑定，**不冒充 Agent 身份或语义判断质量**。没有精确 pass receipt 的裸 `--adopt-existing` 必须失败。以后入口已带 managed header，日常只用普通 `sync`。
+
+### 旧入口的写作原则与门禁配置冲突时
+
+旧入口常有“不写目录结构 / 不列接口清单 / 不列下游”这类**写作原则**，原意是不要维护会过时、会误导 Agent 的手写清单。Harness 必须声明的 `modules[].owns/tests/entry`、`routing.read`、`validation.required_coverage` 和契约 `snapshot` 看起来与之冲突，按下面的标准处理，不要让盲审为此反复 fail：
+
+1. **判定是否真冲突**：门禁配置是被机器持续校验的声明，不是叙述性清单。路径或 glob 失效时 `doctor` 会报零命中，入口文件缺失会报错；接口变化会让 `verify` 的契约 snapshot 漂移失败。只有在 `must_know`、`pitfalls`、knowledge 或生成入口里**用文字复述**目录树、接口列表、下游清单，才算违反原则，这种复述要删掉，改成指向门禁或源码。
+2. **在 ledger 里记为“改写”**：写清原意（防止过时清单误导）、新落点（哪几项配置）、防漂移机制（具体是哪条 doctor 检查、verify 契约或 check 型不变量），以及“正文不复述清单”的约束。
+3. **告诉审计者同一判定标准**：门禁配置只要有防漂移机制，就按“改写并保留原意”判断；审计者只对文字复述的清单判 fail。
+4. **何时上报负责人**：旧原则明确禁止的就是这类机器声明（例如“任何文件里都不得出现路径或接口清单”），某项声明没有可执行的防漂移手段，或者负责人此前就这类取舍有过不同决定时，不要自行裁决。把选项写清楚：A 接受门禁配置，由 doctor/verify 防漂移；B 缩小或去掉该声明，改为 `manual` 验证边界并承担覆盖缺口。由负责人决定，并把决定写入 ledger 和接入说明。
 
 ## 5. 验证到绿
 
@@ -126,7 +135,18 @@ Codex fallback 会保留用户 Hook 源配置里的其他 Hook，只加入一对
 
 Codex 首次信任用户分发器时，agent 先用一句人话说明：“它不改业务代码，也不是共享 Git hook；只把已登记 worktree 的会话事件交回该仓库自己的门禁，其他仓库不执行。”宿主允许 agent 完成信任复核时自动完成；必须由 UI 确认时，只请用户批准安装器打印出的那一条精确 managed dispatcher，不抛给用户技术选型题。
 
-随后启动一个**全新的 Agent 会话**，完成一次安全的验证闭环，再运行 `harness-kit evidence --repo . --json`。宿主支持创建会话/Agent（例如 Orca）时由当前 agent 自动创建和检查；不支持时才请用户重开一次会话。只有 evidence 明确记录该新会话的 SessionStart 基线、Stop 阶段 `run-checks + verify` 结果并且 `hookActive: true`，才能宣称 hooks 已生效。客户端未执行 hooks 时要报 GAP，并用任务开始 SHA 手动跑 `run-checks --base <sha>`，不能把默认 `no-change` 当证据。
+随后启动一个**全新的 Agent 会话**，完成一次安全的验证闭环。宿主支持创建会话/Agent（例如 Orca）时由当前 agent 自动创建和检查；不支持时才请用户重开一次会话。闭环要让一处可审查的改动经过门禁：
+
+1. 新会话里工作区要有本次任务的改动。工作区干净时，在 `.agents/adoption.md` 的 Log 追加一条接入验证记录。
+2. 运行 `harness-kit deliver` 拿到 `accepted`（或者先结束一轮、被 Stop 拦下后再 deliver），然后结束这一轮，让 Stop 再触发一次。
+3. Stop 触发之后（下一轮或会话结束后）运行 `harness-kit evidence --repo . --json`。
+
+默认 thin 模式下，Stop 不自己跑检查，而是要求当前改动有匹配的 accepted deliver 戳；每次 Stop 都会记进该会话的 lifecycle 证据。判定标准：
+
+- `lifecycle` 记录了这个新会话的 SessionStart（`sessionStartedAt`）和最近一次 Stop（`lifecycle.stop`）；
+- `hookActive: true`：这次 Stop 依据的门禁证据有效，并且 Hook 配置与 SessionStart 时一致。thin 模式下证据是 Stop 接受的 deliver 戳（`lifecycle.evidenceSource: "deliver-stamp"`）；`HARNESS_KIT_STOP_MODE=execute` 时是 Stop 自己跑的 run-checks + verify（`"run-checks"`）。
+
+两者都成立才能宣称 hooks 已生效，不需要为此切换到 execute 模式。`lifecycle` 为 null 说明客户端没执行 SessionStart；`lifecycle.stop` 为 null 说明 Stop 没执行；`stop.decision` 为 `block` 说明门禁正在拦截，deliver 后再结束一轮。干净工作区上的 Stop（`reason: clean`）只证明 hook 被调用，没有改动经过门禁，不能代替上面的闭环。客户端未执行 hooks 时要报 GAP，并用任务开始 SHA 手动跑 `run-checks --base <sha>`，不能把默认 `no-change` 当证据。Stop 模式目前没有项目级配置，execute 只能通过运行 Agent 的进程环境变量 `HARNESS_KIT_STOP_MODE=execute` 开启。
 
 若 `doctor` / `verify` 输出 `install-lifecycle-hooks`、`repair-lifecycle-hooks` 或 `prove-lifecycle-hooks`，这不是给用户看的建议，而是你在宣布接入完成前必须自动收敛的动作。只有安装器发现未知第三方结构，或宿主 UI 必须批准精确的 managed dispatcher 时，才暂停并请用户确认。
 

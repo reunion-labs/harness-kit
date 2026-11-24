@@ -67,6 +67,7 @@
 - Pitfall: evidence 读取时必须重算代码与 validation-plan fingerprint；代码、policy/planner 变化或旧证据缺少计划绑定都必须 stale + 非零退出
 - Pitfall: 手动 evidence 的整体 valid 也要求同指纹 verifyPassed，run-checks 单独通过只算 runChecksValid
 - Pitfall: 任务验收优先用 deliver；隐式 HEAD 的 no-change 不能证明已 commit 任务范围，应用 task start / --base
+- Pitfall: evidence 的 hookActive / lifecycle 默认看最近的 lifecycle 会话而不是 latest 指针；显式 --session 只看该会话
 
 ## delivery — 任务 scope 解析、deliver 编排与 delivery stamp
 - Entry: `src/delivery.ts`, `src/commands/deliver.ts`
@@ -88,6 +89,7 @@
 - Test touch: `required`
 - Pitfall: Claude/Codex 用 stdout JSON decision=block；Cursor 用 stdout JSON followup_message
 - Pitfall: Stop 默认 thin（查 stamp），HARNESS_KIT_STOP_MODE=execute 才内嵌重跑；禁止因缺 SessionStart 要求新会话
+- Pitfall: 每次 Stop 都记 lifecycle 观察，thin 放行时绑定它接受的 deliver 戳；记录不得移动 manual latest 指针，也不得改变放行或拦截结论
 - Pitfall: execute 模式若在 hook 内跑 verify，预算需小于客户端 hook 超时
 - Pitfall: Codex linked worktree 必须显式安装用户分发器 fallback；无登记 silent no-op，有登记但路径/权限/runner hash 不一致则 fail closed
 - Pitfall: linked worktree 只能有一条 Harness 生命周期路径；安装时移除自己的项目 Hook、保留第三方项目 Hook，状态发现双路径必须 DEGRADED
@@ -112,6 +114,7 @@
 - Pitfall: guidance 普通文件必须走仓库范围的 O_NOFOLLOW + inode 绑定读取；不能 lstat 后直接按路径 read 留软链接替换窗口
 - Pitfall: declared/unverified 不能命名成 verified；本地 hash 没有外部身份信任根
 - Pitfall: sync 不得写 .agents/.harness-state.json；语义新鲜度只由 record-context-review 推进
+- Pitfall: candidate 必须绑定 landing 落点（.agents 下手写文件 + root=repo knowledge）；只排除 manifest、生成入口、adoption/、hooks/、state、lock 这些已另行绑定或属于机器状态的文件
 
 ## repository-upgrade — 平台无关的版本迁移规划、确定性状态与事务应用
 - Entry: `src/upgrade.ts`, `src/commands/upgrade.ts`
@@ -143,12 +146,14 @@
 - Checks: `test`, `typecheck`
 - Pitfall: verify --json 对 repo-controlled matcher/文件系统异常也必须只输出一份结构化失败报告
 - Pitfall: accept-contract 必须先校验 manifest，基线只能写 .agents/contracts 的安全普通文件
+- Pitfall: doctor 的影响面 glob 检查用 planner 同款 picomatch（含点目录）逐个求值，owns 与 tests 的单个 glob 零命中都要报
 
 ## bundled-skills — onboard / check-loop 技能的定位、输出与维护
 - Entry: `src/skill.ts`
 - Owns (prod): `src/skill.ts`, `src/commands/{onboard,check-loop}.ts`, `skills/**`
 - Tests: `test/onboard.test.ts`
 - Checks: `test`, `typecheck`
+- Pitfall: onboard 打印的命令钉住打印它的那个版本，init 写入 lock 后一律按 lock 调用；不要在 Skill 里写“始终用 @latest”
 
 ## examples — 五种接入形态的可读、doctor-healthy 回归样板（含 Electron validation gates）
 - Entry: `test/examples.test.ts`

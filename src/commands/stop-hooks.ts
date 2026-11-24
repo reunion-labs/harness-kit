@@ -9,6 +9,7 @@ import {
   type CodexLinkedInstallTestHooks,
 } from "../codex-linked-hooks";
 import { gitRoot } from "../git";
+import { repoHarnessInvocation } from "../harness-cli";
 import { inspectManagedFiles, writeManagedFiles, type ManagedFileInspection } from "../managed-files";
 import { err, info, ok, warn } from "../util";
 
@@ -392,8 +393,14 @@ export function installStopHooks(
         : "codex: run `/hooks` to review and trust the new project hooks before they can run",
     );
   }
-  info("\nSessionStart records the exact task base; every Stop reruns run-checks + verify.");
-  info("After the first real agent session, run `harness-kit evidence`; no record means that client surface did not execute project hooks.");
+  info(
+    "\nSessionStart records the exact task base. By default (thin) each Stop requires an accepted deliver stamp for the current change; " +
+      "HARNESS_KIT_STOP_MODE=execute makes Stop rerun run-checks + verify itself. Every Stop is recorded as lifecycle evidence.",
+  );
+  info(
+    `Prove it: in a fresh Agent session, deliver a change and finish the turn, then \`${repoHarnessInvocation(repo)} evidence --repo . --json\` ` +
+      "must show hookActive: true. No lifecycle record means that client surface did not execute project hooks.",
+  );
   info(`Runner is pinned to @erzhe/harness-kit@${pkg.version}; override with HARNESS_KIT_CMD for local development.`);
   return 0;
 }

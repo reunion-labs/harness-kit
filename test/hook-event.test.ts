@@ -151,6 +151,84 @@ test("execute-mode Stop applies deliver's inherited context-freshness rule", () 
   assert.match(JSON.parse(blocked.stdout).reason, /knowledge:agents:knowledge\/policy\.md/);
 });
 
+function evidenceJson(repo: string): any {
+  const result = spawnSync(TSX, [CLI, "evidence", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" });
+  return JSON.parse(result.stdout);
+}
+
+test("default thin Stop leaves lifecycle proof: SessionStart, each Stop, and the deliver stamp it accepted", () => {
+  const repo = fixture();
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  commit(repo, "install lifecycle hooks");
+  const payload = { session_id: "thin-proof" };
+  assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+
+  let body = evidenceJson(repo);
+  assert.equal(body.lifecycle.agent, "claude");
+  assert.equal(body.lifecycle.configurationCurrent, true);
+  assert.equal(body.lifecycle.stop, null);
+  assert.equal(body.hookActive, false);
+
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  const blocked = hook(repo, "claude", "stop", payload);
+  assert.equal(JSON.parse(blocked.stdout).decision, "block");
+  body = evidenceJson(repo);
+  assert.equal(body.lifecycle.stop.mode, "thin");
+  assert.equal(body.lifecycle.stop.decision, "block");
+  assert.equal(body.lifecycle.stop.reason, "no-stamp");
+  assert.equal(body.hookActive, false);
+  const blockedStatus = inspectAgentHookStatus(repo);
+  assert.equal(blockedStatus.state, "degraded");
+  assert.ok(blockedStatus.issues.some((issue) => /latest lifecycle evidence: claude Stop blocked \(no-stamp\)/.test(issue)));
+
+  const delivered = spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" });
+  assert.equal(delivered.status, 0, delivered.stdout);
+  const allowed = hook(repo, "claude", "stop", { ...payload, stop_hook_active: true });
+  assert.equal(allowed.status, 0);
+  assert.equal(allowed.stdout.trim(), "");
+
+  body = evidenceJson(repo);
+  assert.equal(body.hookActive, true, JSON.stringify(body.lifecycle));
+  assert.equal(body.lifecycle.stop.decision, "allow");
+  assert.equal(body.lifecycle.stop.reason, "stamp");
+  assert.equal(body.lifecycle.evidenceSource, "deliver-stamp");
+  assert.equal(body.lifecycle.evidenceValid, true);
+  // The stamp itself still comes from deliver: observing a Stop never moves the latest pointer.
+  assert.equal(body.agent, "manual");
+  assert.equal(body.stamp.status, "accepted");
+  const active = inspectAgentHookStatus(repo);
+  assert.equal(active.state, "active");
+  assert.equal(active.evidenceAgent, "claude");
+
+  // Another Stop still sees the same stamp, so recording observations cannot change decisions.
+  assert.equal(hook(repo, "claude", "stop", payload).stdout.trim(), "");
+
+  // A later edit makes the bound proof stale until the change is delivered again.
+  write(repo, "src/core.ts", "export const value = 3;\n");
+  assert.equal(evidenceJson(repo).hookActive, false);
+  assert.equal(inspectAgentHookStatus(repo).state, "degraded");
+});
+
+test("a thin Stop on a clean tree is observed but is not gate proof", () => {
+  const repo = fixture();
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  commit(repo, "install lifecycle hooks");
+  const payload = { session_id: "thin-clean" };
+  assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+  assert.equal(hook(repo, "claude", "stop", payload).stdout.trim(), "");
+  const body = evidenceJson(repo);
+  assert.equal(body.lifecycle.stop.decision, "allow");
+  assert.equal(body.lifecycle.stop.reason, "clean");
+  assert.equal(body.lifecycle.evidenceSource, null);
+  assert.equal(body.hookActive, false);
+  assert.equal(inspectAgentHookStatus(repo).state, "configured");
+
+  // A Stop without its SessionStart records nothing.
+  assert.equal(hook(repo, "claude", "stop", { session_id: "never-started" }).stdout.trim(), "");
+  assert.equal(evidenceJson(repo).lifecycle.session, body.lifecycle.session);
+});
+
 test("thin Stop allows clean trees and accepted deliver stamps", () => {
   const repo = fixture();
   // Clean: allow without SessionStart.
@@ -218,6 +296,11 @@ test("execute mode: SessionStart base + Stop runs checks without demanding a new
   assert.deepEqual(body.evidence.changed, ["src/core.ts", "test/core.test.ts"]);
   assert.equal(body.evidence.verifyPassed, true);
   assert.equal(body.stamp?.status, "accepted");
+  assert.equal(body.lifecycle.stop.mode, "execute");
+  assert.equal(body.lifecycle.stop.decision, "allow");
+  assert.equal(body.lifecycle.stop.reason, "checks");
+  assert.equal(body.lifecycle.evidenceSource, "run-checks");
+  assert.equal(body.hookActive, true);
   assert.ok(Array.isArray(body.nextActions));
   assert.equal(
     body.nextActions.filter((a: { priority: string }) => a.priority === "required").length,

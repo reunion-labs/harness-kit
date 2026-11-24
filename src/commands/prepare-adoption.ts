@@ -19,9 +19,13 @@ export function prepareAdoptionCmd(repo: string, opts: PrepareAdoptionCommandOpt
     assurance: candidate.assurance,
     independence: candidate.independence,
     legacyEvidenceCount: candidate.legacy.length,
+    landingEvidenceCount: candidate.landing.length,
     targetCount: candidate.targets.length,
   };
   if (opts.json) process.stdout.write(JSON.stringify(result) + "\n");
-  else ok(`prepared adoption candidate ${candidate.candidateHash} at ${output}`);
+  else {
+    ok(`prepared adoption candidate ${candidate.candidateHash} at ${output}`);
+    ok(`bundle: ${candidate.legacy.length} legacy, ${candidate.guidance.length} guidance, ${candidate.landing.length} landing, ${candidate.targets.length} generated`);
+  }
   return 0;
 }
