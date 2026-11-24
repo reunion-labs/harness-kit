@@ -16,7 +16,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # package.json declares node >=18: smoke the bundled CLI on a real Node 18 before publishing.
+  smoke-node18:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: CLI smoke (help / doctor / verify)
+        run: |
+          node --version
+          node dist/harness-kit.cjs --help
+          node dist/harness-kit.cjs doctor --repo .
+          node dist/harness-kit.cjs verify --repo .
+
   publish:
+    needs: smoke-node18
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

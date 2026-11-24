@@ -40,6 +40,23 @@ npx -y @erzhe/harness-kit@latest upgrade --repo .
 
 运行要求：Node.js 18 或更高版本。发布前会用打包后的 CLI 在真实 Node 18 上做 `help / doctor / verify` smoke。
 
+### 发版（维护者）
+
+合入 `main` 不会发包。发版只需两步：
+
+1. 在 PR 里修改 `package.json` 的 `version`，然后合入 `main`。
+2. 推送同名 tag：`git tag v<version> && git push origin v<version>`。
+
+推送 tag 后，`.github/workflows/publish.yml` 会自动完成以下检查和发布，任一步失败都不会发包：
+
+- tag 必须与 `package.json` 版本一致，且该版本尚未发布到 npm
+- 打包后的 CLI 在 Node 18 上跑 `help / doctor / verify` smoke
+- typecheck、test、build
+- 以 npm Trusted Publishing（OIDC，带 provenance）发布：版本号含 `-` 时发布到 `next`，否则发布到 `latest`
+- 创建 GitHub Release
+
+发布不需要 npm token，但工作流文件名和仓库路径已登记在 npm 包设置里。改工作流文件名或迁移仓库前，要先在 npm 包设置中更新 Trusted Publisher。
+
 ---
 
 ## 初始化后你得到什么

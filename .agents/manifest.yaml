@@ -101,6 +101,14 @@ routing:
     dont_assume:
       - 单测用 node:test + tsx，勿引入 jest/vitest（反仪式、少依赖）
     verify: ["test", "typecheck"]
+  - when: 发版 / 改发布流程
+    read: [".github/workflows/publish.yml", ".agents/knowledge/journal/2026-11-24-tag-triggered-npm-publish.md", "package.json"]
+    entry: [".github/workflows/publish.yml"]
+    dont_assume:
+      - 合入 main 不会发包；只有推送 v<version> tag 才触发发布，且 tag 必须等于 package.json version
+      - 发版是人的决定：除非用户明确要求，Agent 不推 tag、不跑 npm publish
+      - npm Trusted Publisher 绑定 reunion-labs/harness-kit + publish.yml；改工作流文件名或迁仓必须先改 npm 包设置
+    verify: ["test", "typecheck"]
 
 modules:
   - name: cli
@@ -280,6 +288,7 @@ modules:
     owns:
       - ".agents/**"
       - ".codex/**"
+      - ".github/**"
       - "AGENTS.md"
       - "CLAUDE.md"
       - "README.md"
