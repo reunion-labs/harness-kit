@@ -1,10 +1,10 @@
 import { existsSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import fg from "fast-glob";
 import type { Knowledge, Manifest, Module } from "./manifest";
 import { hashFile, readText, sha256, writeText } from "./util";
 
-const STATE_REL = ".agents/.harness-state.json";
+export const STATE_REL = ".agents/.harness-state.json";
 
 export interface ContextReviewRecord {
   key: string;
@@ -25,13 +25,25 @@ export interface HarnessState {
   reviews?: Record<string, ContextReviewRecord>;
 }
 
+export type ContextFreshnessCode =
+  | "source-missing"
+  | "authority-changed"
+  | "review-missing"
+  | "content-changed"
+  | "sources-changed"
+  | "legacy-baseline-changed"
+  | "orphan-review";
+
 export interface ContextFreshnessIssue {
   key: string;
   kind: "knowledge" | "module";
   target: string;
   severity: "blocking" | "advisory";
+  code: ContextFreshnessCode;
   reason: string;
   changedSources: string[];
+  /** Set by task-scoped callers (deliver): the same blocking issue already existed on the task base. */
+  inherited?: boolean;
 }
 
 interface ContextSnapshot {
@@ -137,11 +149,15 @@ export function computeBindings(repo: string, manifest: Manifest): HarnessState 
   return { bindings };
 }
 
+export function parseState(raw: string): HarnessState {
+  const value = JSON.parse(raw) as Partial<HarnessState>;
+  return { bindings: value.bindings ?? {}, reviews: value.reviews ?? {} };
+}
+
 export function readState(repo: string): HarnessState | null {
   const raw = readText(join(repo, STATE_REL));
   if (!raw) return null;
-  const value = JSON.parse(raw) as Partial<HarnessState>;
-  return { bindings: value.bindings ?? {}, reviews: value.reviews ?? {} };
+  return parseState(raw);
 }
 
 export function writeState(repo: string, state: HarnessState): void {
@@ -176,6 +192,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
         kind: snapshot.kind,
         target: snapshot.target,
         severity: "blocking",
+        code: "source-missing",
         reason: "绑定源文件缺失，不能把上下文视为已复核",
         changedSources: missing,
       });
@@ -188,6 +205,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
         kind: snapshot.kind,
         target: snapshot.target,
         severity: "blocking",
+        code: "authority-changed",
         reason: `authority 在复核后从 ${review.authority} 变为 ${expectedAuthority}`,
         changedSources: changedSources(review.sources, snapshot.sources),
       });
@@ -200,6 +218,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
           kind: snapshot.kind,
           target: snapshot.target,
           severity: "blocking",
+          code: "review-missing",
           reason: `尚未记录复核（authority: ${snapshot.authority}）`,
           changedSources: Object.keys(snapshot.sources).sort(),
         });
@@ -212,6 +231,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
           kind: snapshot.kind,
           target: snapshot.target,
           severity: "blocking",
+          code: "content-changed",
           reason: "知识内容在复核后发生变化，必须重新记录复核",
           changedSources: sources,
         });
@@ -221,6 +241,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
           kind: snapshot.kind,
           target: snapshot.target,
           severity: "blocking",
+          code: "sources-changed",
           reason: `绑定源文件在复核后发生变化（authority: ${snapshot.authority}）`,
           changedSources: sources,
         });
@@ -238,6 +259,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
           kind: snapshot.kind,
           target: snapshot.target,
           severity: "blocking",
+          code: review.contentHash !== snapshot.contentHash ? "content-changed" : "sources-changed",
           reason: review.contentHash !== snapshot.contentHash ? "上下文内容在复核后发生变化" : "绑定源文件在复核后发生变化",
           changedSources: sources,
         });
@@ -253,6 +275,7 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
         kind: snapshot.kind,
         target: snapshot.target,
         severity: "advisory",
+        code: "legacy-baseline-changed",
         reason: "legacy freshness baseline changed; record a context review to make it durable",
         changedSources: sources,
       });
@@ -266,11 +289,77 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
       kind: review.kind,
       target: review.target,
       severity: "blocking",
+      code: "orphan-review",
       reason: "orphan review: 已复核的 knowledge 仍在 manifest 中，但不再声明 binds/authority，已有复核不能静默消失",
       changedSources: Object.keys(review.sources ?? {}).sort(),
     });
   }
   return issues;
+}
+
+export interface ContextStateView {
+  manifest: Manifest | null;
+  state: HarnessState | null;
+}
+
+function repoRelative(path: string): string {
+  return posix.normalize(path.split(sep).join("/")).replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/** Repo-relative files/directories whose bytes a context's freshness verdict hashes. */
+function contextPaths(manifest: Manifest | null, key: string): string[] {
+  const paths: string[] = [];
+  for (const knowledge of manifest?.knowledge ?? []) {
+    if (knowledgeKey(knowledge) !== key) continue;
+    paths.push(repoRelative(knowledge.root === "repo" ? knowledge.path : `.agents/${knowledge.path}`));
+    paths.push(...(knowledge.binds ?? []).map(repoRelative));
+  }
+  for (const module of manifest?.modules ?? []) {
+    if (`module:${module.name}` === key) paths.push(...(module.entry ?? []).map(repoRelative));
+  }
+  return paths;
+}
+
+function contextDeclaration(manifest: Manifest | null, key: string): string {
+  return JSON.stringify([
+    ...(manifest?.knowledge ?? [])
+      .filter((knowledge) => knowledgeKey(knowledge) === key)
+      .map((knowledge) => ({ binds: knowledge.binds ?? [], authority: knowledge.authority ?? null })),
+    ...(manifest?.modules ?? []).filter((module) => `module:${module.name}` === key).map(moduleContentHash),
+  ]);
+}
+
+function contextReviewEvidence(state: HarnessState | null, issue: ContextFreshnessIssue): string {
+  const legacyKey = issue.kind === "knowledge" ? issue.target : issue.key;
+  return JSON.stringify([state?.reviews?.[issue.key] ?? null, state?.bindings?.[legacyKey] ?? null]);
+}
+
+/**
+ * Keys of blocking issues that a task did not introduce. A freshness verdict is
+ * a pure function of the manifest declaration, the recorded review, and the
+ * bytes of the knowledge target and bound sources. When none of those inputs
+ * differs between the task base and the current tree, the same blocking issue
+ * already existed on the base. Any doubt keeps the issue task-scoped.
+ */
+export function inheritedContextKeys(
+  issues: readonly ContextFreshnessIssue[],
+  current: ContextStateView,
+  base: ContextStateView,
+  changedFiles: readonly string[],
+): Set<string> {
+  const inherited = new Set<string>();
+  if (!base.manifest) return inherited;
+  const changed = changedFiles.map(repoRelative);
+  const touches = (path: string) => changed.some((file) => file === path || file.startsWith(`${path}/`));
+  for (const issue of issues) {
+    if (issue.severity !== "blocking") continue;
+    if (contextDeclaration(current.manifest, issue.key) !== contextDeclaration(base.manifest, issue.key)) continue;
+    if (contextReviewEvidence(current.state, issue) !== contextReviewEvidence(base.state, issue)) continue;
+    const paths = [...contextPaths(current.manifest, issue.key), ...issue.changedSources.map(repoRelative)];
+    if (paths.some(touches)) continue;
+    inherited.add(issue.key);
+  }
+  return inherited;
 }
 
 export interface RecordContextReviewOpts {

@@ -1,5 +1,6 @@
 import { inspectDeliveryStamp, type DeliveryStamp } from "../delivery";
 import { buildHarnessGuidance, type HarnessNextAction } from "../guidance";
+import { repoHarnessInvocation } from "../harness-cli";
 import { agentHookConfigurationFingerprint, inspectAgentHookStatus, type AgentHookStatus } from "../hook-status";
 import { inspectValidationEvidenceFreshness, readLatestValidationSession, readValidationSession } from "../validation-state";
 import { err, info, ok, warn } from "../util";
@@ -46,7 +47,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   }
   const hooks = safeHookStatus(repo);
   if (!session?.lastEvidence) {
-    const guidance = buildHarnessGuidance({ hooks, evidence: { found: false } });
+    const guidance = buildHarnessGuidance({ hooks, evidence: { found: false }, cli: repoHarnessInvocation(repo) });
     if (opts.json) {
       process.stdout.write(
         JSON.stringify(
@@ -86,6 +87,7 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   const guidance = buildHarnessGuidance({
     hooks,
     evidence: { found: true, stale, runChecksValid, verifyPassed: evidence.verifyPassed, valid },
+    cli: repoHarnessInvocation(repo),
   });
   const result = {
     ...body,

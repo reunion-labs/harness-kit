@@ -26,7 +26,9 @@
 - Checks: `test`, `typecheck`
 - Test touch: `required`
 - Must know: routing/modules 只在声明时才生成对应 .agents/*.md
+- Must know: 入口里的可执行命令写成 .agents/harness.lock.json 钉住的 npx 调用；render 保持纯函数，版本由调用方读 lock 后传入
 - Pitfall: AGENTS.md 要保持精简，别把 routing/modules 全文塞进去
+- Pitfall: sync / verify / doctor / adoption 必须用同一个 lock 版本渲染，upgrade 用目标版本渲染，否则入口会被判为漂移
 
 ## enforce — 声明式不变量执行（确定性，无 LLM）
 - Entry: `src/enforce.ts`
@@ -75,6 +77,8 @@
 - Pitfall: 改动范围：task/--base 优先，否则降级 worktree vs HEAD；禁止默认 merge-base origin/main
 - Pitfall: deliver 路径 budgetMs=0（长跑允许）；mutating/background 仍 fail closed
 - Pitfall: stamp 只写 Git admin 私有状态，读取时必须 freshness 重算
+- Pitfall: 继承的 context 过期只在本任务没碰它的输入（binds/entry、知识文档、manifest 声明、state 复核记录）时降为 maintenance；独立 verify 仍严格
+- Pitfall: 目录没有 manifest 时先找祖先和嵌套 target：祖先存在就要求到 target 根重跑，否则 not-adopted（exit 3），不写任何证据
 
 ## agent-hooks — Claude Code / Cursor / Codex 的 SessionStart + Stop 生命周期门禁
 - Entry: `src/commands/hook-event.ts`
@@ -111,7 +115,7 @@
 
 ## repository-upgrade — 平台无关的版本迁移规划、确定性状态与事务应用
 - Entry: `src/upgrade.ts`, `src/commands/upgrade.ts`
-- Owns (prod): `src/upgrade.ts`, `src/commands/upgrade.ts`
+- Owns (prod): `src/upgrade.ts`, `src/commands/upgrade.ts`, `src/harness-cli.ts`
 - Tests: `test/upgrade.test.ts`
 - Checks: `test`, `typecheck`
 - Test touch: `required`
@@ -119,6 +123,7 @@
 - Pitfall: apply 必须拒绝 dirty 仓库，并把 manifest、生成入口和 lock 放入同一次 managed-file 事务
 - Pitfall: 只解析而没有迁移时必须保留 manifest 原始字节，不能顺手格式化
 - Pitfall: Hook 不属于仓内原子事务；当前 upgrade 不得安装、卸载或刷新 Hook
+- Pitfall: lock 版本会进入 Agent 复制执行的命令，只接受纯 semver，其余一律回退 @latest
 
 ## context-freshness — 任意 repo 文档登记、authority 语义与 Agent review evidence
 - Entry: `src/state.ts`
@@ -129,6 +134,7 @@
 - Pitfall: root=repo 表示 path 从仓库根解析，不代表固定目录名，也不搬运业务文档
 - Pitfall: authority=derived/policy/review 都要求显式 Agent 复核；hash 只能证明之后没变，不能证明分析质量
 - Pitfall: 删除 binds、切换 authority 或绑定源缺失都必须让旧 review 失效，不能靠旧 hash 继续显示 current
+- Pitfall: inheritedContextKeys 拿不准就保持 task-scoped：base 没有 manifest、读 base 失败、声明或复核记录有任何差异都不算继承
 
 ## core-gates — init/sync/doctor/verify/contract/enforcement 的通用基础
 - Entry: `src/commands/verify.ts`

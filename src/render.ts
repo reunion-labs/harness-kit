@@ -1,5 +1,11 @@
+import { HARNESS_LOCK_REL, harnessInvocation } from "./harness-cli";
 import type { Manifest } from "./manifest";
 import { GEN_HEADER } from "./util";
+
+export interface RenderOptions {
+  /** Version from `.agents/harness.lock.json`; entry commands pin it. Rendering stays pure: callers read the lock. */
+  harnessVersion?: string | null;
+}
 
 /** Safely stringify a manifest value — objects become JSON instead of [object Object]. */
 function safeStr(v: unknown): string {
@@ -10,9 +16,9 @@ function safeStr(v: unknown): string {
 }
 
 /** Generated tool files. Each returns [relPath, content]. Routing/modules only when present. */
-export function renderTargets(m: Manifest): Array<[string, string]> {
+export function renderTargets(m: Manifest, opts: RenderOptions = {}): Array<[string, string]> {
   const targets: Array<[string, string]> = [
-    ["AGENTS.md", renderAgentsMd(m)],
+    ["AGENTS.md", renderAgentsMd(m, opts)],
     ["CLAUDE.md", renderClaudeMd()],
     [".agents/reference.md", renderReferenceMd(m)],
   ];
@@ -21,8 +27,11 @@ export function renderTargets(m: Manifest): Array<[string, string]> {
   return targets;
 }
 
-export function renderAgentsMd(m: Manifest): string {
+export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
   const id = m.identity;
+  // The package is distributed through npx, so a bare `harness-kit` is usually
+  // not on PATH (exit 127). Every runnable instruction uses the pinned form.
+  const hk = harnessInvocation(opts.harnessVersion);
   const L: string[] = [];
   L.push(GEN_HEADER(), "");
   L.push(`# ${id.name}`, "");
@@ -30,10 +39,17 @@ export function renderAgentsMd(m: Manifest): string {
 
   L.push("## Working agreement (read first)", "");
   L.push(
+    `Harness CLI: run every \`harness-kit <command>\` here as \`${hk} <command>\` ` +
+      (opts.harnessVersion
+        ? `(version pinned by \`${HARNESS_LOCK_REL}\`; no global install needed).`
+        : `(no global install needed; this repository has no \`${HARNESS_LOCK_REL}\` version pin yet).`),
+    "",
+  );
+  L.push(
     "`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; " +
       "`.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. " +
-      "Do NOT edit those files by hand — edit the manifest and run `harness-kit sync`. " +
-      "Knowledge is hand-authored; `.agents/hooks/` is managed by `harness-kit install-hooks`.",
+      `Do NOT edit those files by hand — edit the manifest and run \`${hk} sync\`. ` +
+      `Knowledge is hand-authored; \`.agents/hooks/\` is managed by \`${hk} install-hooks\`.`,
     "",
   );
   L.push("Before you touch code:");
@@ -44,19 +60,19 @@ export function renderAgentsMd(m: Manifest): string {
     L.push("2. Find your change-type in `.agents/routing.md` and read the files it points to. Do NOT full-repo grep and guess.");
   else L.push("2. Read the relevant files before editing. Do NOT full-repo grep and guess.");
   if ((m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || m.validation)
-    L.push("   Prefer `harness-kit task start` before editing so committed work stays in the deliver scope.");
+    L.push(`   Prefer \`${hk} task-start\` before editing so committed work stays in the deliver scope.`);
   L.push("");
   const hasImpactMap = (m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || !!m.validation;
   L.push("Before you finish:");
   if (hasImpactMap) {
     L.push(
-      "3. Run `harness-kit deliver` (impact-driven checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means the task is done. If `needs-work`, fix and re-run — do not claim completion without an accepted stamp.",
+      `3. Run \`${hk} deliver\` (impact-driven checks + verify + stamp). Only \`status=accepted\` (or clean \`no-change\`) means the task is done. If \`needs-work\`, fix and re-run — do not claim completion without an accepted stamp.`,
     );
     L.push(
-      "   Optional: `harness-kit task start` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.",
+      `   Optional: \`${hk} task-start\` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.`,
     );
   } else {
-    L.push("3. Run `harness-kit deliver` (or at least `harness-kit verify`). Do not claim completion without a passing stamp/verify.");
+    L.push(`3. Run \`${hk} deliver\` (or at least \`${hk} verify\`). Do not claim completion without a passing stamp/verify.`);
   }
   L.push(
     "4. Read `NEXT ACTIONS` (or JSON `nextActions`): complete every `required | agent` action automatically before finishing; ask the user only for a `required | human` decision. Defer `recommended` maintenance during unrelated product work.",
@@ -118,7 +134,7 @@ export function renderAgentsMd(m: Manifest): string {
       const how = inv.enforcement ? "enforced" : inv.check ? "checked" : "manual";
       L.push(`- ${inv.rule} [${how}]`);
     }
-    L.push("", "Run `harness-kit verify` to check the enforceable ones.", "");
+    L.push("", `Run \`${hk} verify\` to check the enforceable ones.`, "");
   }
 
   L.push("## Knowledge & maps (load on demand)", "");
@@ -130,7 +146,7 @@ export function renderAgentsMd(m: Manifest): string {
     L.push("- Full commands, environment, and registered knowledge catalog: `.agents/reference.md`");
   if (m.routing?.length) L.push("- Change-type routing (read before editing): `.agents/routing.md`");
   if (m.modules?.length) L.push("- Module map + common pitfalls: `.agents/modules.md`");
-  if (hasImpactMap) L.push("- Implement -> verify loop (deep guide): run `harness-kit check-loop`");
+  if (hasImpactMap) L.push(`- Implement -> verify loop (deep guide): run \`${hk} check-loop\``);
   L.push("- Tooling adoption log (earn heavier tooling): `.agents/adoption.md`");
   if (m.playbooks?.dir) L.push(`- Task playbooks: \`.agents/${m.playbooks.dir}\``);
   L.push("");

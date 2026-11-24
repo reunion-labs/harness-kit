@@ -1,8 +1,10 @@
+import pkg from "../../package.json";
 import { assertManagedFileAdoption, assertManagedFileAdoptionReceipt } from "../adoption";
+import { HARNESS_LOCK_REL, lockedHarnessVersion } from "../harness-cli";
 import { loadManifest, validateManifest } from "../manifest";
 import { writeManagedFiles } from "../managed-files";
 import { renderTargets } from "../render";
-import { info, ok } from "../util";
+import { info, ok, warn } from "../util";
 
 export interface SyncOpts {
   adoptExisting?: boolean;
@@ -15,7 +17,13 @@ export function syncCmd(repo: string, opts: SyncOpts = {}): void {
   const errors = validateManifest(m).filter((issue) => issue.level === "error");
   if (errors.length) throw new Error(`manifest invalid: ${errors.map((issue) => issue.msg).join("; ")}`);
   info("Syncing generated files from .agents/manifest.yaml ...");
-  const targets = renderTargets(m);
+  const harnessVersion = lockedHarnessVersion(repo);
+  if (harnessVersion && harnessVersion !== pkg.version)
+    warn(
+      `running harness-kit ${pkg.version} but ${HARNESS_LOCK_REL} pins ${harnessVersion}; generated entries keep pinning ${harnessVersion}. ` +
+        "Use `upgrade` to move the repository to this version.",
+    );
+  const targets = renderTargets(m, { harnessVersion });
   if (!!opts.adoptionCandidate !== !!opts.adoptionAudit)
     throw new Error("adoption requires both --candidate <bundle> and --audit <receipt>");
   if ((opts.adoptionCandidate || opts.adoptionAudit) && !opts.adoptExisting)

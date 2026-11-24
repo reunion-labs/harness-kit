@@ -28,9 +28,11 @@ Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard�
 已有仓库升级不需要重新 `init` / `onboard`，也不需要把 Harness 加进业务依赖：
 
 ```bash
-npx -y @erzhe/harness-kit@0.5.1 upgrade --repo . --check
-npx -y @erzhe/harness-kit@0.5.1 upgrade --repo .
+npx -y @erzhe/harness-kit@latest upgrade --repo . --check
+npx -y @erzhe/harness-kit@latest upgrade --repo .
 ```
+
+`upgrade` 的目标版本就是你运行的 CLI 版本：用 `@latest` 跟进最新版，或换成 `@<具体版本>` 精确控制。升级后 `.agents/harness.lock.json` 记录新版本，生成的 `AGENTS.md` 里所有 Harness 命令也随之钉到这个版本。
 
 `--check` 完全只读：已是当前版本返回 0，需要升级返回 2，阻塞或状态损坏返回 1。正式 apply 要求目标 Git scope 干净，并把 manifest（仅在迁移确实改变时）、全部生成入口和 `.agents/harness.lock.json` 放进同一仓内文件事务。版本获取由调用方决定，所以公共 npm、公司内部镜像、本地固定二进制都能使用同一接口。0.5.1 不在 `upgrade` 里改 Hook；Hook 仍通过 `install-hooks` 单独管理。
 
@@ -66,15 +68,26 @@ npx -y @erzhe/harness-kit@0.5.1 upgrade --repo .
 任务验收入口是 **一条命令**：
 
 ```bash
-harness-kit task start --repo .   # 可选；记住任务起点，覆盖之后的 commit
+harness-kit task-start --repo .   # 可选；记住任务起点，覆盖之后的 commit
 # ... Agent 写代码 ...
 harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 ```
+
+`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.7.0 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `evidence` 输出的 NEXT 命令也用同一形式。
 
 - **有 task base / `--base`**：按任务范围 diff 验收（含已提交改动）
 - **没有**：降级为**当前工作区 git diff（相对 HEAD）**，对这些文件跑测
 - **干净工作区**：`no-change`（不假装验过历史 commit）
 - **复杂任务允许长跑**：`deliver` 不用 7 分钟总预算卡死测试
+- **继承的知识过期不算本任务的失败**：主干上有人改了被 `binds` 的文件（比如 bump 依赖改了 `package.json`）却没复核，这类过期在任务 base 上就已存在。只要本任务没碰该知识的输入（绑定源、知识文档本身、manifest 里的声明、`.harness-state.json` 里的复核记录），`deliver` 就把它列为继承项（文本输出的 `context freshness ... already stale on task base`，JSON 的 `inheritedContext`），照常 `accepted`，并在 MAINTENANCE / `nextActions` 里给出精确的 `record-context-review --path|--module ...` 刷新命令，留给维护者处理。独立运行的 `verify` 仍是严格门禁，适合放在 CI 里，在引入过期的那次提交就拦下。
+- **未接入的仓库**：目录下没有 `.agents/manifest.yaml` 时，`deliver` 返回 `not-adopted`（退出码 3，JSON `status: "not-adopted"`、`adopted: false`），提示按仓库自身规范验收，不再给出“修完重跑”的误导。如果当前目录在某个 Harness target 之内，会提示到 target 根目录重跑；如果改动落在嵌套 target 里，会列出这些 target 的 deliver 命令。
+
+| deliver status | 退出码 | 含义 |
+| --- | --- | --- |
+| `accepted` | 0 | 本次改动已验收，stamp 有效 |
+| `no-change` | 0 | 没有待验改动 |
+| `needs-work` | 1 | 按输出修复后重跑 |
+| `not-adopted` | 3 | 该目录未接入 harness-kit：不要重跑，按仓库自身规范验收 |
 
 Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block，并提示跑 `deliver`——**不再要求新开会话**。  
 `HARNESS_KIT_STOP_MODE=execute` 可恢复 Stop 内直接重跑验收。

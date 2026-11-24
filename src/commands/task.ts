@@ -1,4 +1,5 @@
 import { readTaskRecord, startTaskRecord } from "../delivery";
+import { repoHarnessInvocation } from "../harness-cli";
 import { err, info, ok } from "../util";
 
 export interface TaskStartOpts {
@@ -15,7 +16,7 @@ export function taskStartCmd(repo: string, opts: TaskStartOpts = {}): number {
     } else {
       ok(`task started at base ${record.baseSha}`);
       if (record.note) info(`note: ${record.note}`);
-      info("run harness-kit deliver when ready to accept this task's changes");
+      info(`run ${repoHarnessInvocation(repo)} deliver when ready to accept this task's changes`);
     }
     return 0;
   } catch (error) {
@@ -32,7 +33,7 @@ export function taskStatusCmd(repo: string, opts: { json?: boolean } = {}): numb
   }
   if (!record) {
     err("no active task record for this worktree");
-    info("run: harness-kit task start --repo .");
+    info(`run: ${repoHarnessInvocation(repo)} task-start --repo .`);
     info("without a task base, deliver falls back to worktree diff vs HEAD");
     return 1;
   }

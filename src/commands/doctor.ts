@@ -2,6 +2,7 @@ import fg from "fast-glob";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { buildHarnessGuidance } from "../guidance";
+import { lockedHarnessVersion, repoHarnessInvocation } from "../harness-cli";
 import { inspectAgentHookStatus } from "../hook-status";
 import { loadManifest, validateManifest } from "../manifest";
 import { inspectManagedFiles } from "../managed-files";
@@ -21,6 +22,7 @@ export interface DoctorOpts {
 export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   let problems = 0;
   const m = loadManifest(repo);
+  const render = { harnessVersion: lockedHarnessVersion(repo) };
 
   info("1) Manifest validation");
   const issues = validateManifest(m);
@@ -157,7 +159,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
 
   info("\n3) Generated files drift");
   try {
-    for (const inspection of inspectManagedFiles(repo, renderTargets(m))) {
+    for (const inspection of inspectManagedFiles(repo, renderTargets(m, render))) {
       if (inspection.kind === "missing") warn(`${inspection.relativePath} not generated yet (run \`harness-kit sync\`)`);
       else if (!inspection.satisfiesDesired) {
         err(`${inspection.relativePath} drifted from manifest (run \`harness-kit sync\`)`);
@@ -209,7 +211,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   }
 
   info("\n6) AGENTS.md size budget (must stay short — agents read it every session)");
-  const agents = renderAgentsMd(m);
+  const agents = renderAgentsMd(m, render);
   const nLines = agents.split("\n").length;
   const nWords = agents.trim().split(/\s+/).length;
   if (nLines > AGENTS_MAX_LINES || nWords > AGENTS_MAX_WORDS) {
@@ -232,7 +234,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
     warn(`DEGRADED — configured: ${configuredAgents}; ${hooks.issues.join("; ")}`);
   }
 
-  const guidance = buildHarnessGuidance({ manifest: m, hooks });
+  const guidance = buildHarnessGuidance({ manifest: m, hooks, cli: repoHarnessInvocation(repo) });
   const visibleActions = opts.details
     ? guidance.nextActions
     : guidance.nextActions.filter((action) => action.priority === "required");

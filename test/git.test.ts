@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { collectChanges, GitDiffError } from "../src/git";
+import { collectChanges, GitDiffError, listWorktreeFiles, readFileAtCommit } from "../src/git";
 
 function repoWithCommit(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "hk-git-"));
@@ -117,4 +117,41 @@ test("fingerprints include the current submodule commit", () => {
   writeFileSync(join(submodule, "value.txt"), "dirty-five\n");
   const dirtyFive = collectChanges(parent, base, { mode: "exact" });
   assert.notEqual(dirtyFour.fingerprint, dirtyFive.fingerprint, "dirty submodule file content participates in the fingerprint");
+});
+
+test("readFileAtCommit reads target-relative files from a commit and reports absence as null", () => {
+  const repo = repoWithCommit({
+    "packages/app/.agents/manifest.yaml": "spec: ai-harness/v0\n",
+    "packages/app/src/a.ts": "export const a = 1;\n",
+    "top.txt": "top\n",
+  });
+  const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+  writeFileSync(join(repo, "packages/app/.agents/manifest.yaml"), "spec: ai-harness/v1\n");
+
+  const target = join(repo, "packages/app");
+  assert.equal(readFileAtCommit(target, base, ".agents/manifest.yaml"), "spec: ai-harness/v0\n");
+  assert.equal(readFileAtCommit(repo, base, "top.txt"), "top\n");
+  assert.equal(readFileAtCommit(target, base, "missing.txt"), null);
+  assert.equal(readFileAtCommit(target, base, "src"), null, "a tree is not a file");
+  // Pathspec magic in a file name is taken literally.
+  assert.equal(readFileAtCommit(repo, base, "*.txt"), null);
+  assert.throws(() => readFileAtCommit(repo, "0".repeat(40), "top.txt"), (error: unknown) => error instanceof GitDiffError);
+});
+
+test("listWorktreeFiles finds tracked and untracked matches below a directory only", () => {
+  const repo = repoWithCommit({
+    "packages/app/.agents/manifest.yaml": "spec: ai-harness/v0\n",
+    "packages/lib/src/lib.ts": "export const lib = 1;\n",
+  });
+  mkdirSync(join(repo, "packages/new/.agents"), { recursive: true });
+  writeFileSync(join(repo, "packages/new/.agents/manifest.yaml"), "spec: ai-harness/v0\n");
+  mkdirSync(join(repo, "ignored/.agents"), { recursive: true });
+  writeFileSync(join(repo, "ignored/.agents/manifest.yaml"), "spec: ai-harness/v0\n");
+  writeFileSync(join(repo, ".gitignore"), "ignored/\n");
+
+  assert.deepEqual(listWorktreeFiles(repo, "**/.agents/manifest.yaml").sort(), [
+    "packages/app/.agents/manifest.yaml",
+    "packages/new/.agents/manifest.yaml",
+  ]);
+  assert.deepEqual(listWorktreeFiles(join(repo, "packages/lib"), "**/.agents/manifest.yaml"), []);
 });

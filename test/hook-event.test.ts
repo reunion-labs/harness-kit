@@ -47,6 +47,15 @@ function commit(repo: string, message: string): void {
   });
 }
 
+const LOCK = (version: string) =>
+  JSON.stringify({
+    schema: "ai-harness/upgrade-state/v1",
+    package: "@erzhe/harness-kit",
+    version,
+    manifestSpec: "ai-harness/v0",
+    appliedMigrations: ["upgrade-state-v1"],
+  }) + "\n";
+
 function fixture(manifest = MANIFEST): string {
   const repo = mkdtempSync(join(tmpdir(), "hk-hook-event-"));
   execFileSync("git", ["init", "-q"], { cwd: repo });
@@ -93,17 +102,53 @@ function installedHook(
 
 test("thin Stop without SessionStart asks for deliver, never a new session", () => {
   const repo = fixture();
+  write(repo, ".agents/harness.lock.json", LOCK("1.2.3"));
+  commit(repo, "pin harness");
   write(repo, "src/core.ts", "export const value = 2;\n");
   const claude = hook(repo, "claude", "stop", { session_id: "no-session-start" });
   assert.equal(claude.status, 0);
   assert.equal(JSON.parse(claude.stdout).decision, "block");
-  assert.match(JSON.parse(claude.stdout).reason, /harness-kit deliver/);
+  // The block reason must be runnable without a global install: the lock-pinned npx form.
+  assert.match(JSON.parse(claude.stdout).reason, /Run: npx -y @erzhe\/harness-kit@1\.2\.3 deliver --repo \./);
   assert.doesNotMatch(JSON.parse(claude.stdout).reason, /Start a new agent session|SessionStart baseline/);
 
   const cursor = hook(repo, "cursor", "stop", { conversation_id: "no-session-start" });
   assert.equal(cursor.status, 0);
-  assert.match(JSON.parse(cursor.stdout).followup_message, /harness-kit deliver/);
+  assert.match(JSON.parse(cursor.stdout).followup_message, /npx -y @erzhe\/harness-kit@1\.2\.3 deliver/);
   assert.doesNotMatch(JSON.parse(cursor.stdout).followup_message, /Start a new agent session/);
+});
+
+test("execute-mode Stop applies deliver's inherited context-freshness rule", () => {
+  const repo = fixture(`${MANIFEST}knowledge:
+  - path: knowledge/policy.md
+    authority: policy
+    binds: [package.json]
+`);
+  write(repo, "package.json", '{ "name": "fixture", "version": "1.0.0" }\n');
+  write(repo, ".agents/knowledge/policy.md", "# Policy\n");
+  const review = spawnSync(TSX, [CLI, "record-context-review", "--repo", repo, "--path", "knowledge/policy.md", "--reason", "fixture"], {
+    encoding: "utf8",
+  });
+  assert.equal(review.status, 0, review.stderr + review.stdout);
+  commit(repo, "reviewed policy");
+  // Mainline bumps the bound file without a review: stale before any task starts.
+  write(repo, "package.json", '{ "name": "fixture", "version": "1.0.1" }\n');
+  commit(repo, "bump");
+
+  const executeEnv = { HARNESS_KIT_STOP_MODE: "execute" };
+  const payload = { session_id: "inherited-session" };
+  assert.equal(hook(repo, "codex", "session-start", payload, executeEnv).status, 0);
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  const allowed = hook(repo, "codex", "stop", payload, executeEnv);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout.trim(), "", allowed.stdout);
+
+  // Touching the bound source inside the session makes the staleness this session's work.
+  write(repo, "package.json", '{ "name": "fixture", "version": "1.0.2" }\n');
+  const blocked = hook(repo, "codex", "stop", payload, executeEnv);
+  assert.equal(JSON.parse(blocked.stdout).decision, "block");
+  assert.match(JSON.parse(blocked.stdout).reason, /knowledge:agents:knowledge\/policy\.md/);
 });
 
 test("thin Stop allows clean trees and accepted deliver stamps", () => {

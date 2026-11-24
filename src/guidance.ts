@@ -62,6 +62,8 @@ export interface HarnessGuidanceInput {
   manifest?: Manifest;
   hooks?: AgentHookStatus;
   evidence?: EvidenceGuidanceInput;
+  /** Runnable CLI prefix for action commands, e.g. the lock-pinned npx invocation. */
+  cli?: string;
 }
 
 function gap(
@@ -156,7 +158,7 @@ function declaredVerificationGaps(manifest: Manifest): VerificationGapDetail[] {
   return gaps;
 }
 
-function automationAction(gaps: VerificationGapDetail[]): HarnessNextAction | null {
+function automationAction(gaps: VerificationGapDetail[], cli: string): HarnessNextAction | null {
   const recommended = gaps.filter((item) => item.classification === "recommended");
   if (!recommended.length) return null;
   return {
@@ -167,7 +169,7 @@ function automationAction(gaps: VerificationGapDetail[]): HarnessNextAction | nu
     title: `Improve ${recommended.length} verification declaration(s)`,
     reason:
       "These declarations have no executable check or complete manual procedure. They do not invalidate this run, but they weaken future coverage.",
-    commands: ["harness-kit verify --repo . --details"],
+    commands: [`${cli} verify --repo . --details`],
     completion:
       "Each declaration has a real enforcement/check, or an explicit manual procedure when automation is genuinely impossible.",
   };
@@ -183,7 +185,7 @@ function unsafeHookIssue(issue: string): boolean {
   );
 }
 
-function hookActions(hooks: AgentHookStatus): HarnessNextAction[] {
+function hookActions(hooks: AgentHookStatus, cli: string): HarnessNextAction[] {
   // Hooks are an optional session intercept. Delivery quality is driven by `deliver` stamps,
   // not by proving hookActive in a fresh session — never require "open a new conversation".
   if (hooks.state === "active") return [];
@@ -215,7 +217,7 @@ function hookActions(hooks: AgentHookStatus): HarnessNextAction[] {
       title: "Optional: observe lifecycle Hook on a later Stop",
       reason:
         `Hooks are configured for ${configured || "the current Agent"} but not yet observed. This does not block delivery — use harness-kit deliver for task acceptance.`,
-      commands: ["harness-kit deliver --repo .", "harness-kit evidence --repo . --json"],
+      commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "Deliver stamp is valid; hook observation is optional.",
     }];
   }
@@ -230,8 +232,8 @@ function hookActions(hooks: AgentHookStatus): HarnessNextAction[] {
       reason:
         "Without Stop hooks, agents must run harness-kit deliver cooperatively. Install hooks only when the host supports them.",
       commands: [
-        "harness-kit deliver --repo .",
-        `harness-kit install-hooks --repo . --stop --agents ${configured || "<current-agent>"}`,
+        `${cli} deliver --repo .`,
+        `${cli} install-hooks --repo . --stop --agents ${configured || "<current-agent>"}`,
       ],
       completion: "Deliver works without hooks; hooks only add session intercept when the host fires Stop.",
     }];
@@ -245,14 +247,14 @@ function hookActions(hooks: AgentHookStatus): HarnessNextAction[] {
     title: "Optional: repair Agent lifecycle Hook configuration",
     reason: "Hook configuration is incomplete or degraded. Delivery still uses harness-kit deliver.",
     commands: [
-      `harness-kit install-hooks --repo . --stop --agents ${configured}`,
-      "harness-kit deliver --repo .",
+      `${cli} install-hooks --repo . --stop --agents ${configured}`,
+      `${cli} deliver --repo .`,
     ],
     completion: "Hooks install cleanly or the team accepts deliver-only cooperative mode.",
   }];
 }
 
-function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
+function evidenceActions(evidence: EvidenceGuidanceInput, cli: string): HarnessNextAction[] {
   if (!evidence.found) {
     return [{
       id: "record-delivery-evidence",
@@ -261,10 +263,7 @@ function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
       when: "before-finish",
       title: "Accept this change with harness-kit deliver",
       reason: "No delivery stamp exists for the current worktree/session.",
-      commands: [
-        "harness-kit deliver --repo .",
-        "harness-kit evidence --repo . --json",
-      ],
+      commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "deliver reports status=accepted (or no-change) and evidence stamp is valid.",
     }];
   }
@@ -276,7 +275,7 @@ function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
       when: "before-finish",
       title: "Re-run deliver for the current code",
       reason: "The saved green stamp belongs to an older code fingerprint.",
-      commands: ["harness-kit deliver --repo .", "harness-kit evidence --repo . --json"],
+      commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "Stamp is no longer stale and deliver reports accepted.",
     }];
   }
@@ -288,7 +287,7 @@ function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
       when: "before-finish",
       title: "Complete impact-driven delivery checks",
       reason: "The selected checks did not produce valid evidence for the current code.",
-      commands: ["harness-kit deliver --repo .", "harness-kit evidence --repo . --json"],
+      commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "deliver reports accepted and stamp runChecksValid: true.",
     }];
   }
@@ -300,7 +299,7 @@ function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
       when: "before-finish",
       title: "Complete delivery verification",
       reason: "Change checks passed, but matching verify evidence is missing or failed.",
-      commands: ["harness-kit deliver --repo .", "harness-kit evidence --repo . --json"],
+      commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "deliver reports accepted and stamp valid: true.",
     }];
   }
@@ -308,12 +307,13 @@ function evidenceActions(evidence: EvidenceGuidanceInput): HarnessNextAction[] {
 }
 
 export function buildHarnessGuidance(input: HarnessGuidanceInput): HarnessGuidance {
+  const cli = input.cli ?? "harness-kit";
   const gapDetails = input.manifest ? declaredVerificationGaps(input.manifest) : [];
   const nextActions = [
-    ...(input.evidence ? evidenceActions(input.evidence) : []),
-    ...(input.hooks ? hookActions(input.hooks) : []),
+    ...(input.evidence ? evidenceActions(input.evidence, cli) : []),
+    ...(input.hooks ? hookActions(input.hooks, cli) : []),
   ];
-  const improvement = automationAction(gapDetails);
+  const improvement = automationAction(gapDetails, cli);
   if (improvement) nextActions.push(improvement);
   return {
     gapDetails,

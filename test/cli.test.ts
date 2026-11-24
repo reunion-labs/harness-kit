@@ -152,3 +152,29 @@ test("the real CLI blocks an implicit manual no-change result", () => {
   assert.equal(result.status, 1);
   assert.ok(JSON.parse(result.stdout).gaps.some((gap: { kind: string }) => gap.kind === "manual-base-required"));
 });
+
+test("sync pins generated entries to the lock version and warns when the running CLI differs", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-cli-sync-pin-"));
+  mkdirSync(join(repo, ".agents"), { recursive: true });
+  writeFileSync(join(repo, ".agents/manifest.yaml"), "spec: ai-harness/v0\nidentity: { name: pinned, summary: pinned }\n");
+  writeFileSync(
+    join(repo, ".agents/harness.lock.json"),
+    JSON.stringify({
+      schema: "ai-harness/upgrade-state/v1",
+      package: "@erzhe/harness-kit",
+      version: "0.0.1",
+      manifestSpec: "ai-harness/v0",
+      appliedMigrations: ["upgrade-state-v1"],
+    }) + "\n",
+  );
+  const result = spawnSync(TSX, [CLI, "sync", "--repo", repo], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, new RegExp(`WARN running harness-kit ${PACKAGE_VERSION.replace(/\./g, "\\.")} but \\.agents/harness\\.lock\\.json pins 0\\.0\\.1`));
+  const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+  assert.match(agents, /`npx -y @erzhe\/harness-kit@0\.0\.1 deliver`/);
+  assert.doesNotMatch(agents, new RegExp(`@${PACKAGE_VERSION.replace(/\./g, "\\.")}`));
+
+  // verify renders with the same lock version, so the pinned entry is not drift.
+  const verify = spawnSync(TSX, [CLI, "verify", "--repo", repo, "--json"], { encoding: "utf8" });
+  assert.equal(JSON.parse(verify.stdout).messages.some((m: { text: string }) => /drifted/.test(m.text)), false);
+});

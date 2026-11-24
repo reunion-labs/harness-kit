@@ -41,13 +41,30 @@ test("the repository impact map keeps platform-neutral upgrades in one focused m
   const module = loadManifest(REPO).modules?.find((item) => item.name === "repository-upgrade");
   assert.ok(module);
   assert.deepEqual(module.entry, ["src/upgrade.ts", "src/commands/upgrade.ts"]);
-  assert.deepEqual(module.owns, ["src/upgrade.ts", "src/commands/upgrade.ts"]);
+  assert.deepEqual(module.owns, ["src/upgrade.ts", "src/commands/upgrade.ts", "src/harness-cli.ts"]);
   assert.deepEqual(module.tests, ["test/upgrade.test.ts"]);
   assert.ok(module.pitfalls?.some((pitfall) => /不能访问 registry、CI 或代码托管 API/.test(pitfall)));
   assert.ok(module.pitfalls?.some((pitfall) => /当前 upgrade 不得安装、卸载或刷新 Hook/.test(pitfall)));
 
   const managed = loadManifest(REPO).modules?.find((item) => item.name === "managed-generation");
   assert.ok(managed?.tests?.includes("test/cli.test.ts"));
+});
+
+test("the repository impact map records lock-pinned commands and task-scoped delivery decisions", () => {
+  const manifest = loadManifest(REPO);
+  const upgrade = manifest.modules?.find((item) => item.name === "repository-upgrade");
+  assert.ok(upgrade?.owns?.includes("src/harness-cli.ts"));
+  assert.ok(upgrade?.pitfalls?.some((pitfall) => /只接受纯 semver/.test(pitfall)));
+
+  const render = manifest.modules?.find((item) => item.name === "render");
+  assert.ok(render?.must_know?.some((note) => /harness\.lock\.json 钉住的 npx 调用/.test(note)));
+
+  const delivery = manifest.modules?.find((item) => item.name === "delivery");
+  assert.ok(delivery?.pitfalls?.some((pitfall) => /继承的 context 过期.*独立 verify 仍严格/.test(pitfall)));
+  assert.ok(delivery?.pitfalls?.some((pitfall) => /not-adopted（exit 3）/.test(pitfall)));
+
+  const freshness = manifest.modules?.find((item) => item.name === "context-freshness");
+  assert.ok(freshness?.pitfalls?.some((pitfall) => /inheritedContextKeys 拿不准就保持 task-scoped/.test(pitfall)));
 });
 
 test("an unknown manifest spec is rejected instead of being interpreted as v0", () => {

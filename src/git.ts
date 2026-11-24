@@ -258,3 +258,23 @@ export function collectChanges(repoInput: string, base = "HEAD", opts: CollectCh
 export function changedFiles(repo: string, base = "HEAD"): string[] {
   return collectChanges(repo, base).files;
 }
+
+/**
+ * Text of one target-relative file as committed in `commit`, or null when the
+ * path is absent there or is not a regular blob. Git failures throw.
+ */
+export function readFileAtCommit(repoInput: string, commit: string, rel: string): string | null {
+  const target = canonicalPath(repoInput);
+  const root = canonicalPath(gitRoot(target));
+  const prefix = targetPrefix(root, target);
+  const path = prefix ? `${prefix}/${rel}` : rel;
+  const entry = git(root, ["--literal-pathspecs", "ls-tree", "-z", "--full-tree", commit, "--", path]);
+  const match = /^\d+ (\w+) ([0-9a-f]+)\t/.exec(entry);
+  if (!match || match[1] !== "blob") return null;
+  return git(root, ["cat-file", "blob", match[2]]);
+}
+
+/** Tracked and non-ignored untracked files under `dir` matching a pathspec glob, relative to `dir`. */
+export function listWorktreeFiles(dir: string, glob: string): string[] {
+  return nulList(git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", `:(glob)${glob}`]));
+}
