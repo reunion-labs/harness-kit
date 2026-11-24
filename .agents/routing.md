@@ -55,3 +55,11 @@ Find the change-type that matches your task and follow that row before editing.
 - Entry points: `test`
 - Do NOT assume: 单测用 node:test + tsx，勿引入 jest/vitest（反仪式、少依赖）
 - Minimum verification: `test`, `typecheck`
+
+## 发版 / 改发布流程
+- Read first: `.github/workflows/publish.yml`, `.agents/knowledge/journal/2026-11-24-tag-triggered-npm-publish.md`, `package.json`
+- Entry points: `.github/workflows/publish.yml`
+- Do NOT assume: 合入 main 不会发包；只有推送 v<version> tag 才触发发布，且 tag 必须等于 package.json version
+- Do NOT assume: 发版是人的决定：除非用户明确要求，Agent 不推 tag、不跑 npm publish
+- Do NOT assume: npm Trusted Publisher 绑定 reunion-labs/harness-kit + publish.yml；改工作流文件名或迁仓必须先改 npm 包设置
+- Minimum verification: `test`, `typecheck`

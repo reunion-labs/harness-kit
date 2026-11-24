@@ -159,7 +159,7 @@
 
 ## repository-assets — 包元数据、生成状态、项目文档与本仓维护配置
 - Entry: `package.json`
-- Owns (prod): `.agents/**`, `.codex/**`, `AGENTS.md`, `CLAUDE.md`, `README.md`, `docs/**`, `.gitignore`, `package.json`, `pnpm-lock.yaml`
+- Owns (prod): `.agents/**`, `.codex/**`, `.github/**`, `AGENTS.md`, `CLAUDE.md`, `README.md`, `docs/**`, `.gitignore`, `package.json`, `pnpm-lock.yaml`
 - Tests: `test/**`
 - Checks: `test`, `typecheck`
 - Pitfall: package 声明 Node >=18，runtime 依赖不得偷偷抬高版本下限；发布包要用真实 Node 18 跑 CLI smoke
