@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { planChecksCmd } from "../src/commands/plan-checks";
@@ -437,4 +437,44 @@ validation:
   const result = runJson(repo);
   assert.equal(result.code, 1);
   assert.ok(result.json.failed.some((failure: any) => failure.id === "e2e" && failure.code === 7));
+});
+
+test("checks receive the resolved task base and the changed-file list they are judging", () => {
+  const manifest = MANIFEST.replace(
+    'test: { run: "true" }',
+    'test: { run: "git cat-file -e \\"$HARNESS_KIT_BASE^{commit}\\" && cp \\"$HARNESS_KIT_CHANGED_FILES\\" \\"$OUT\\"" }',
+  );
+  const repo = freshRepo({
+    ".agents/manifest.yaml": manifest,
+    "src/api/users.ts": "export const x = 1;\n",
+    "test/api/users.test.ts": "// initial coverage\n",
+  });
+  execSync("git add .", { cwd: repo });
+  execSync('git -c user.name="Harness Test" -c user.email="harness@example.test" commit -qm initial', { cwd: repo });
+  const base = execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim();
+  writeFileSync(join(repo, "src/api/users.ts"), "export const x = 2;\n");
+  writeFileSync(join(repo, "test/api/users.test.ts"), "// updated coverage\n");
+  execSync('git -c user.name="Harness Test" -c user.email="harness@example.test" commit -qam change', { cwd: repo });
+  writeFileSync(join(repo, "src/api/extra.ts"), "export const y = 1;\n");
+
+  const out = join(mkdtempSync(join(tmpdir(), "hk-rc-env-")), "changed.txt");
+  const previous = { out: process.env.OUT, base: process.env.HARNESS_KIT_BASE };
+  process.env.OUT = out;
+  // A stale outer value must never reach the check.
+  process.env.HARNESS_KIT_BASE = "0000000000000000000000000000000000000000";
+  try {
+    const { code, json } = runJson(repo, { base, mode: "exact" });
+    assert.equal(code, 0, JSON.stringify(json.failed));
+    assert.ok(json.passed.includes("test"));
+  } finally {
+    if (previous.out === undefined) delete process.env.OUT;
+    else process.env.OUT = previous.out;
+    if (previous.base === undefined) delete process.env.HARNESS_KIT_BASE;
+    else process.env.HARNESS_KIT_BASE = previous.base;
+  }
+  assert.deepEqual(readFileSync(out, "utf8").trim().split("\n").sort(), [
+    "src/api/extra.ts",
+    "src/api/users.ts",
+    "test/api/users.test.ts",
+  ]);
 });

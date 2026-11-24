@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadManifest, validateManifest } from "../src/manifest";
 import type { Manifest } from "../src/manifest";
@@ -75,6 +77,24 @@ test("the repository impact map records lifecycle proof, landing evidence, and p
   assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /candidate 必须绑定 landing 落点/.test(pitfall)));
   assert.ok(module("core-gates")?.pitfalls?.some((pitfall) => /单个 glob 零命中都要报/.test(pitfall)));
   assert.ok(module("bundled-skills")?.pitfalls?.some((pitfall) => /钉住打印它的那个版本/.test(pitfall)));
+});
+
+test("the repository impact map records the 0.7.2 rollout decisions", () => {
+  const manifest = loadManifest(REPO);
+  const module = (name: string) => manifest.modules?.find((item) => item.name === name);
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /纯路径提及降级为 unresolved.*仍 fail closed/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /isHarnessGenerated/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /没有 legacy 入口也一样/.test(pitfall)));
+  assert.ok(module("validation-runner")?.pitfalls?.some((pitfall) => /SessionStart 新建会话不得移动 manual latest 指针/.test(pitfall)));
+  assert.ok(module("delivery")?.pitfalls?.some((pitfall) => /stamp 按 target 读取/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /LEGACY_HOOK_FAILURE_MESSAGES/.test(pitfall)));
+});
+
+test("SPEC states the exact declarative enforcement scan semantics", () => {
+  const spec = readFileSync(join(REPO, "SPEC-v0.md"), "utf8");
+  assert.match(spec, /`forbid_pattern` \/ `forbid_import` 是不带 flag 的 JavaScript `RegExp`，对每个文件\*\*逐行\*\*/);
+  assert.match(spec, /`path_glob` 由 fast-glob 在 target 根下求值（只取文件，`dot: false`）/);
+  assert.match(spec, /只有\*\*纯路径提及\*\*在所有基准下都找不到仓内文件时，才记成 candidate 的 `unresolved` 条目/);
 });
 
 test("an unknown manifest spec is rejected instead of being interpreted as v0", () => {

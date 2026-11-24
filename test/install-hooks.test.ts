@@ -768,3 +768,33 @@ test("installed outer commands still block when the shared runner is missing", (
   assert.equal(codexStop.status, 0);
   assert.equal(JSON.parse(codexStop.stdout).decision, "block");
 });
+
+test("hook failure fallbacks never offer a bare harness-kit command, and 0.7.1 fallbacks are replaced in place", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const settingsPath = join(dir, ".claude", "settings.json");
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  const runner = readFileSync(join(dir, ".agents", "hooks", "harness-agent-hook.sh"), "utf8");
+  for (const text of [JSON.stringify(settings), runner])
+    assert.doesNotMatch(text, /run harness-kit (run-checks|verify|deliver)/);
+  assert.match(settings.hooks.Stop[0].hooks[0].command, /run the pinned deliver command from AGENTS\.md manually/);
+  assert.match(runner, /run npx -y @erzhe\/harness-kit@\d+\.\d+\.\d+\S* deliver manually/);
+
+  // Simulate a 0.7.1 install: same command shape, old fallback wording.
+  const legacy = (command: string) =>
+    command.replace(
+      "run the pinned deliver command from AGENTS.md manually",
+      "run harness-kit run-checks and harness-kit verify manually",
+    );
+  for (const event of ["SessionStart", "Stop"]) settings.hooks[event][0].hooks[0].command = legacy(settings.hooks[event][0].hooks[0].command);
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  assert.deepEqual(inspectAgentHookStatus(dir).configuredAgents, ["claude"]);
+
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const reinstalled = JSON.parse(readFileSync(settingsPath, "utf8"));
+  for (const event of ["SessionStart", "Stop"]) {
+    const ours = reinstalled.hooks[event].flatMap((group: any) => group.hooks).filter((hook: any) => /harness-agent-hook\.sh/.test(hook.command));
+    assert.equal(ours.length, 1, event);
+    assert.match(ours[0].command, /pinned deliver command from AGENTS\.md/);
+  }
+});

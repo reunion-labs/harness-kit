@@ -78,6 +78,7 @@ function safeInspectAgentHookStatus(repo: string): AgentHookStatus {
 }
 
 function verifyInternal(repo: string, opts: VerifyOpts): number {
+  const cli = repoHarnessInvocation(repo);
   let manifest: Manifest;
   try {
     manifest = loadManifest(repo);
@@ -112,7 +113,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
   const messages: VerifyMessage[] = [];
   let manifestErrors: string[] = [];
   const hooks = safeInspectAgentHookStatus(repo);
-  const guidance = buildHarnessGuidance({ manifest, hooks, cli: repoHarnessInvocation(repo) });
+  const guidance = buildHarnessGuidance({ manifest, hooks, cli });
   const gaps = guidance.gapDetails.map((gap) => gap.legacyText);
 
   const emit = (level: VerifyMessage["level"], text: string): void => {
@@ -194,10 +195,10 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
   try {
     for (const inspection of inspectManagedFiles(repo, renderTargets(manifest, { harnessVersion: lockedHarnessVersion(repo) }))) {
       if (inspection.kind === "missing") {
-        emit("error", `${inspection.relativePath} missing (run \`harness-kit sync\`)`);
+        emit("error", `${inspection.relativePath} missing (run \`${cli} sync\`)`);
         failures++;
       } else if (!inspection.satisfiesDesired) {
-        emit("error", `${inspection.relativePath} drifted from manifest (run \`harness-kit sync\`)`);
+        emit("error", `${inspection.relativePath} drifted from manifest (run \`${cli} sync\`)`);
         failures++;
       } else if (inspection.kind === "allowed-alias") emit("ok", `${inspection.relativePath} semantic alias -> AGENTS.md`);
       else emit("ok", inspection.relativePath);
@@ -303,11 +304,14 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
             );
           } else {
             const baseline = readBaseline(repo, contract.id);
-            if (baseline === null) emit("warn", `${contract.id}: snapshot baseline not set — run \`harness-kit accept-contract --id ${contract.id}\``);
+            if (baseline === null) emit("warn", `${contract.id}: snapshot baseline not set — run \`${cli} accept-contract --id ${contract.id}\``);
             else if (baseline !== captured.stdout) {
               failures++;
               emit("error", `${contract.id}: contract drifted from baseline${contract.breaking_needs ? ` (breaking -> ${contract.breaking_needs})` : ""}`);
-              emit("info", `       if intended: bump version, then \`harness-kit accept-contract --id ${contract.id}\``);
+              emit(
+                "info",
+                `       if intended: ${contract.breaking_needs ? `treat it as a ${contract.breaking_needs} change (breaking_needs), then ` : ""}\`${cli} accept-contract --id ${contract.id}\``,
+              );
             } else emit("ok", `${contract.id} (snapshot)`);
           }
         }
@@ -323,7 +327,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
   if (hooks.state === "active")
     emit("ok", `ACTIVE — ${hooks.evidenceAgent} observed on Stop; configured: ${configuredAgents} (optional intercept; task gate is deliver)`);
   else if (hooks.state === "configured")
-    emit("warn", `CONFIGURED — ${configuredAgents}; optional intercept not yet observed. Task acceptance: harness-kit deliver`);
+    emit("warn", `CONFIGURED — ${configuredAgents}; optional intercept not yet observed. Task acceptance: ${cli} deliver`);
   else emit("warn", `DEGRADED — configured: ${configuredAgents}; ${hooks.issues.join("; ")}`);
 
   emit("info", "\n6) Declared verification boundaries");
@@ -339,7 +343,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
         const text = `[${gap.classification.toUpperCase()}] ${gap.title} — ${gap.when} ${gap.reason}`;
         emit(gap.classification === "recommended" ? "warn" : "info", text);
       }
-    } else emit("info", "       details: `harness-kit verify --details`");
+    } else emit("info", `       details: \`${cli} verify --details\``);
   }
 
   const visibleActions = opts.details

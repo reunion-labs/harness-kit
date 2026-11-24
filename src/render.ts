@@ -39,51 +39,46 @@ export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
 
   L.push("## Working agreement (read first)", "");
   L.push(
-    `Harness CLI: run every \`harness-kit <command>\` here as \`${hk} <command>\` ` +
+    `Harness CLI: \`${hk} <command>\` ` +
       (opts.harnessVersion
-        ? `(version pinned by \`${HARNESS_LOCK_REL}\`; no global install needed).`
-        : `(no global install needed; this repository has no \`${HARNESS_LOCK_REL}\` version pin yet).`),
+        ? `(pinned by \`${HARNESS_LOCK_REL}\`; no global install).`
+        : `(no global install; no \`${HARNESS_LOCK_REL}\` version pin yet).`),
     "",
   );
   L.push(
-    "`AGENTS.md`, `CLAUDE.md`, and `.agents/reference.md` are GENERATED from `.agents/manifest.yaml`; " +
-      "`.agents/routing.md` / `.agents/modules.md` are generated when those sections are declared. " +
-      `Do NOT edit those files by hand — edit the manifest and run \`${hk} sync\`. ` +
-      `Knowledge is hand-authored; \`.agents/hooks/\` is managed by \`${hk} install-hooks\`.`,
+    "Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` " +
+      "(plus `.agents/routing.md` / `.agents/modules.md` when declared). " +
+      `Edit the manifest, then run \`${hk} sync\`. Knowledge is hand-authored; \`.agents/hooks/\` belongs to \`install-hooks\`.`,
     "",
   );
-  L.push("Before you touch code:");
-  L.push(
-    "1. Post a **Task Brief** in chat: what you'll change, which change-type it is, which layers/files it touches, and how you'll verify.",
-  );
-  if (m.routing?.length)
-    L.push("2. Find your change-type in `.agents/routing.md` and read the files it points to. Do NOT full-repo grep and guess.");
-  else L.push("2. Read the relevant files before editing. Do NOT full-repo grep and guess.");
-  if ((m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || m.validation)
-    L.push(`   Prefer \`${hk} task-start\` before editing so committed work stays in the deliver scope.`);
-  L.push("");
   const hasImpactMap = (m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || !!m.validation;
+  L.push("Before you touch code:");
+  L.push("1. Post a **Task Brief**: what changes, change-type, files/layers touched, how you'll verify.");
+  if (m.routing?.length)
+    L.push("2. Find your change-type in `.agents/routing.md` and read the files it points to; do NOT full-repo grep and guess.");
+  else L.push("2. Read the relevant files before editing; do NOT full-repo grep and guess.");
+  if (hasImpactMap)
+    L.push(
+      `   Prefer \`${hk} task-start\` before editing so later commits stay in deliver scope (without it, deliver uses the worktree diff vs HEAD).`,
+    );
+  L.push("");
   L.push("Before you finish:");
   if (hasImpactMap) {
     L.push(
-      `3. Run \`${hk} deliver\` (impact-driven checks + verify + stamp). Only \`status=accepted\` (or clean \`no-change\`) means the task is done. If \`needs-work\`, fix and re-run — do not claim completion without an accepted stamp.`,
-    );
-    L.push(
-      `   Optional: \`${hk} task-start\` before editing so later commits stay in scope; without it, deliver falls back to the current worktree git diff vs HEAD.`,
+      `3. Run \`${hk} deliver\` (checks + verify + stamp). Only \`status=accepted\` (or clean \`no-change\`) means done; on \`needs-work\`, fix and re-run.`,
     );
   } else {
     L.push(`3. Run \`${hk} deliver\` (or at least \`${hk} verify\`). Do not claim completion without a passing stamp/verify.`);
   }
   L.push(
-    "4. Read `NEXT ACTIONS` (or JSON `nextActions`): complete every `required | agent` action automatically before finishing; ask the user only for a `required | human` decision. Defer `recommended` maintenance during unrelated product work.",
+    "4. In `NEXT ACTIONS` / `nextActions`: do every `required | agent` action yourself; ask the user only for `required | human`; defer `recommended` during unrelated work.",
   );
   L.push(
-    "5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention one only when it is relevant to this task.",
+    "5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention them only when relevant.",
   );
   L.push(
-    "6. If you learned something an agent could not infer from code (a gotcha, a decision, a fix), update the registered knowledge source in place, " +
-      "or add new Harness-owned knowledge under `.agents/knowledge/` (a journal ADR for decisions). Never move/copy an existing repo document just to fit a folder name. " +
-      "Do NOT record one-off noise or anything already obvious from the code.",
+    "6. Record what code can't tell an agent (gotcha, decision, fix): update the registered knowledge source in place, " +
+      "or add to `.agents/knowledge/` (journal ADR for decisions). Never move/copy existing repo docs to fit a folder; skip one-off noise.",
   );
   L.push("");
 
@@ -121,7 +116,8 @@ export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
   }
 
   if (m.contracts?.length) {
-    L.push("## Contracts (breaking changes need a version bump)", "");
+    // Not every repository versions its interfaces; breaking_needs says what a break requires.
+    L.push("## Contracts (never break silently)", "");
     for (const c of m.contracts) {
       L.push(`- ${c.id} [${c.kind}]${c.breaking_needs ? ` (breaking -> ${c.breaking_needs})` : ""}: ${c.desc}`);
     }

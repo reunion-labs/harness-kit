@@ -14,7 +14,7 @@ harness-kit 把仓库的工程知识（这是什么、怎么跑、什么不能�
 Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard，然后严格按输出执行。
 ```
 
-入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.7.1`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
+入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.7.2`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
 
 就这一句。Agent 会：
 
@@ -92,7 +92,9 @@ harness-kit task-start --repo .   # 可选；记住任务起点，覆盖之后�
 harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 ```
 
-`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.7.0 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `evidence` 输出的 NEXT 命令也用同一形式。
+`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.7.2 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
+
+`run-checks`（以及 `deliver`、execute 模式的 Stop）执行 check 时会注入两个环境变量：`HARNESS_KIT_BASE` 是本次评判的 resolved base commit，`HARNESS_KIT_CHANGED_FILES` 指向一个临时文件，每行一个改动路径（target 相对，含已删除路径）。“只检查增量代码”的规则可以直接用它们，例如 `git diff --check ${HARNESS_KIT_BASE:-HEAD}`，或只对清单里的 `.go` 文件跑 gofmt。
 
 - **有 task base / `--base`**：按任务范围 diff 验收（含已提交改动）
 - **没有**：降级为**当前工作区 git diff（相对 HEAD）**，对这些文件跑测
@@ -108,10 +110,12 @@ harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 | `needs-work` | 1 | 按输出修复后重跑 |
 | `not-adopted` | 3 | 该目录未接入 harness-kit：不要重跑，按仓库自身规范验收 |
 
-Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block，并提示跑 `deliver`——**不再要求新开会话**。  
+Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block，并提示跑 `deliver --repo <被门禁的 target 绝对路径>`——**不再要求新开会话**。会话开始前已 accepted 的 deliver 戳，只要指纹仍覆盖当前改动，SessionStart 之后照样有效。  
 `HARNESS_KIT_STOP_MODE=execute` 可恢复 Stop 内直接重跑验收。这个模式只由运行 Agent 的进程环境变量决定，目前没有项目级配置。
 
-每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。
+每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。`evidence` 顶层的 `agent`、`hookConfigurationCurrent` 描述最近一条验证记录（常常是手动 deliver），判断 Hook 是否生效看 `hookActive` 和 `hookActiveSource`（`lifecycle` 或 `latest-record`）。
+
+Claude Code 会把新装的项目 Hook 加载进正在运行的会话。这个会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动有 accepted 的 deliver 戳，所以接入时把 `install-hooks` 放在最后一步，装完立即 `deliver`，不要在等待异步盲审时安装。
 
 诚实边界：没有宿主 Stop / Supervisor 时，会话级强制 Loop 做不到；此时靠 AGENTS 协议 + `deliver` +（可选）Git/CI。Hook 观测（`CONFIGURED/ACTIVE`）是旁路，不是交付成功标准。
 
@@ -126,15 +130,15 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 
 | 命令 | 作用 |
 | --- | --- |
-| `harness-kit onboard` | 打印 onboard skill 给 Agent（配合 npx，永远最新、零安装） |
-| `harness-kit init` | 铺 `.agents/` 骨架 + 空白 manifest |
+| `harness-kit onboard` | 打印 onboard skill 给 Agent（配合 npx 零安装；打印的流程钉住打印它的版本） |
+| `harness-kit init` | 铺 `.agents/` 骨架 + 起步 manifest：按 `go.mod` / `Cargo.toml` / `package.json`（lockfile + 真实 scripts）推断命令，默认带 `diff_check` 与 `validation.defaults.no_match`，不套 JS 模板 |
 | `harness-kit sync` | manifest → 事务生成 AGENTS.md / CLAUDE.md / reference / routing / modules；不刷新知识复核 |
 | `harness-kit upgrade [--check] [--json]` | 把仓库原地升级到当前运行 CLI 版本；确定性迁移 + 生成物刷新 + doctor/verify，不访问 registry/CI/代码托管，也不改 Hook |
 | `harness-kit task-start` | 记录本 worktree 任务 base（可选；SessionStart 也会写） |
 | `harness-kit deliver` | **任务验收入口**：scope → run-checks + verify → stamp |
-| `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE 及它们显式引用的文档证据、规则迁移后的落点（`.agents/` 下的 knowledge / checks 等和 `root: repo` 文档）和确定性候选，不改仓内文件 |
+| `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE 及它们显式引用的文档证据、规则迁移后的落点（`.agents/` 下的 knowledge / checks 等和 `root: repo` 文档）和确定性候选，不改仓内文件；找不到仓内文件的纯路径提及列进绑定 hash 的 `unresolved` 清单，交给盲审确认 |
 | `harness-kit record-adoption-audit` | 把声明的 pass/fail、理由和审计报告 hash 绑定到一版候选 |
-| `harness-kit sync --adopt-existing --candidate ... --audit ...` | 首次接管：只有 live legacy、候选、manifest 和 pass receipt 逐字节一致才事务写入 |
+| `harness-kit sync --adopt-existing --candidate ... --audit ...` | 首次接管：只有 live legacy、候选、manifest 和 pass receipt 逐字节一致才事务写入；没有旧入口的仓库也必须核对回执 |
 | `harness-kit doctor [--details]` | 体检：完整性 / 路径引用 / 影响面 glob 零命中（逐个 owns / tests glob）/ 漂移 / 新鲜度 / 体量预算；默认折叠无需马上处理的边界 |
 | `harness-kit verify [--json] [--details]` | 门禁：跑不变量 + 契约 + 漂移，给出分类后的下一步；失败非 0 退出 |
 | `harness-kit accept-contract` | 有意变更接口后，记录新的契约指纹为基线 |
@@ -160,7 +164,9 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 
 默认文本只展开当前必须处理的动作；`--details` 展开全部声明，`--json` 提供 `gapDetails`、`gapSummary` 和 `nextActions` 给 Agent 稳定执行。`verify: OK` 表示声明的确定性门禁已通过；只有同时显示 `Harness readiness: READY`，才表示 Lifecycle Hook 等初始化收尾也已完成。
 
-首次接管是一个窄状态机，不靠 Agent 记住长说明：`init` 保存将被接管的旧入口 → `prepare-adoption` 在仓外收集原地 guidance、规则落点并生成候选 → 独立 Agent 盲审 → `record-adoption-audit` 绑定报告 → 带 candidate/receipt 的 `sync --adopt-existing` 才能写真实入口。盲审者在 bundle 的 `landing/` 里就能核对每条旧规则迁到了哪里，不需要另附副本。manifest、旧入口、snapshot/index、嵌套入口/显式引用文档、落点、候选文件或审计报告任一变化，旧回执立即失效；裸 `--adopt-existing` 不能接管。回执明确写 `assurance: declared`、`independence: unverified`：它能强制顺序和准确字节，不能在没有外部身份系统时伪装证明“审计者一定独立、语义判断一定正确”。
+首次接管是一个窄状态机，不靠 Agent 记住长说明：`init` 保存将被接管的旧入口 → `prepare-adoption` 在仓外收集原地 guidance、规则落点并生成候选 → 独立 Agent 盲审 → `record-adoption-audit` 绑定报告 → 带 candidate/receipt 的 `sync --adopt-existing` 才能写真实入口。盲审者在 bundle 的 `landing/` 里就能核对每条旧规则迁到了哪里，不需要另附副本。manifest、旧入口、snapshot/index、嵌套入口/显式引用文档、unresolved 清单、落点、候选文件或审计报告任一变化，旧回执立即失效；裸 `--adopt-existing` 直接报错，没有旧入口的仓库也要走同一个回执检查。
+
+引用闭包按写法区分：Markdown 链接和 `@path` import 解析不到仍然 fail closed；正文或代码块里的纯路径提及（目录树示意、简写文件名、外部知识库路径）先按引用文件目录、target 根、再按中间祖先目录（Skill / package 根）解析，都找不到才记成 `unresolved`。存在但不安全的目标（二进制、仓外 symlink 等）一律 fail closed。回执明确写 `assurance: declared`、`independence: unverified`：它能强制顺序和准确字节，不能在没有外部身份系统时伪装证明“审计者一定独立、语义判断一定正确”。
 
 ## 实现之后，怎么保证真的验收了
 

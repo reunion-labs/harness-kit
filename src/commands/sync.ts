@@ -28,9 +28,14 @@ export function syncCmd(repo: string, opts: SyncOpts = {}): void {
     throw new Error("adoption requires both --candidate <bundle> and --audit <receipt>");
   if ((opts.adoptionCandidate || opts.adoptionAudit) && !opts.adoptExisting)
     throw new Error("--candidate/--audit are only valid with --adopt-existing");
+  if (opts.adoptExisting && !opts.adoptionCandidate)
+    throw new Error("--adopt-existing requires --candidate <bundle> and --audit <receipt>; legacy snapshot + --adopt-existing alone is not authorization");
   const result = writeManagedFiles(repo, targets, {
     authorize: (inspections) => {
       if (opts.adoptExisting && opts.adoptionCandidate && opts.adoptionAudit) {
+        // An explicit takeover proves the receipt before any write, even when
+        // there is no legacy entry to adopt; only a pure no-op skips it.
+        if (inspections.every((inspection) => inspection.satisfiesDesired)) return;
         assertManagedFileAdoptionReceipt(repo, inspections, opts.adoptionCandidate, opts.adoptionAudit);
         return;
       }

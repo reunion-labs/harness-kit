@@ -19,9 +19,17 @@ export const ALL_AGENTS: AgentTool[] = ["claude", "cursor", "codex"];
 const SCRIPT_REL = ".agents/hooks/harness-agent-hook.sh";
 const SCRIPT_MARK = "harness-kit-managed-hook (agent-lifecycle)";
 
-function hookCommand(agent: AgentTool, event: "session-start" | "stop"): string {
+// The client config cannot know the lock version, so it points at the pinned
+// command in AGENTS.md instead of naming a bare `harness-kit` that is not on PATH.
+const HOOK_FAILURE_MESSAGE = "harness-kit hook runner is missing or failed; run the pinned deliver command from AGENTS.md manually";
+// Written by 0.7.1 and earlier. Still recognized as managed so install-hooks
+// replaces it in place instead of adding a second Harness entry.
+const LEGACY_HOOK_FAILURE_MESSAGES = [
+  "harness-kit hook runner is missing or failed; run harness-kit run-checks and harness-kit verify manually",
+];
+
+function hookCommand(agent: AgentTool, event: "session-start" | "stop", message = HOOK_FAILURE_MESSAGE): string {
   const run = `bash "$(git rev-parse --show-toplevel)/${SCRIPT_REL}" ${agent} ${event}`;
-  const message = "harness-kit hook runner is missing or failed; run harness-kit run-checks and harness-kit verify manually";
   if (event === "stop") {
     const output =
       agent === "cursor"
@@ -50,7 +58,7 @@ export function isInstalledAgentHookCommand(
   let candidate = command.trim();
   const override = candidate.match(LOCAL_CLI_OVERRIDE);
   if (override) candidate = candidate.slice(override[0].length).trim();
-  return candidate === hookCommand(agent, event);
+  return [HOOK_FAILURE_MESSAGE, ...LEGACY_HOOK_FAILURE_MESSAGES].some((message) => candidate === hookCommand(agent, event, message));
 }
 
 export function installedAgentHookRunnerScript(): string {
@@ -61,7 +69,7 @@ AGENT="$1"
 EVENT="$2"
 
 block_infrastructure_failure() {
-  message="harness-kit hook infrastructure failed; run harness-kit run-checks and harness-kit verify manually"
+  message="harness-kit hook infrastructure failed; run npx -y @erzhe/harness-kit@${pkg.version} deliver manually"
   if [ "$EVENT" = "stop" ]; then
     if [ "$AGENT" = "cursor" ]; then
       printf '{"followup_message":"%s"}\n' "$message"
@@ -303,7 +311,7 @@ export function installStopHooks(
   if (linkedCodex && !opts.allowUserDispatcher) {
     err(
       "codex project hooks are not a reliable single lifecycle path in linked worktrees; " +
-        "no Agent hook files changed. Retry with `harness-kit install-hooks --repo . --stop --agents codex --allow-user-dispatcher`",
+        `no Agent hook files changed. Retry with \`${repoHarnessInvocation(repo)} install-hooks --repo . --stop --agents codex --allow-user-dispatcher\``,
     );
     return 1;
   }
@@ -402,5 +410,11 @@ export function installStopHooks(
       "must show hookActive: true. No lifecycle record means that client surface did not execute project hooks.",
   );
   info(`Runner is pinned to @erzhe/harness-kit@${pkg.version}; override with HARNESS_KIT_CMD for local development.`);
+  if (agents.includes("claude"))
+    warn(
+      "claude: Claude Code may load these hooks into the session that installed them. That session has no SessionStart, " +
+        `so its next Stop already needs an accepted deliver for the whole worktree change; run \`${repoHarnessInvocation(repo)} deliver --repo .\` ` +
+        "before ending this turn, and install hooks last during onboarding.",
+    );
   return 0;
 }

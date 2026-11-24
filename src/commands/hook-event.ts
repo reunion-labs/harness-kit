@@ -102,10 +102,15 @@ function parseRunReport(output: string): RunChecksReport | null {
   }
 }
 
-function deliverBlockMessage(cli: string, extra = ""): string {
+// The agent's cwd may sit in a nested target; name the gated root explicitly.
+function repoArgument(repo: string): string {
+  return /^[A-Za-z0-9_./@%+=:,-]+$/.test(repo) ? repo : `'${repo.replace(/'/g, `'"'"'`)}'`;
+}
+
+function deliverBlockMessage(cli: string, repo: string, extra = ""): string {
   const lines = [
     "harness-kit: delivery is not verified; continue working before stopping.",
-    `Run: ${cli} deliver --repo .`,
+    `Run: ${cli} deliver --repo ${repoArgument(repo)}`,
     "Only status=accepted (or no-change with a clean tree) may finish.",
     "Fix failures from deliver, then finish again.",
   ];
@@ -113,7 +118,7 @@ function deliverBlockMessage(cli: string, extra = ""): string {
   return lines.join("\n");
 }
 
-function failureMessage(report: RunChecksReport | null, verifyOutput: string, token: string, cli: string): string {
+function failureMessage(report: RunChecksReport | null, verifyOutput: string, token: string, cli: string, repo: string): string {
   const lines = ["harness-kit: delivery is not verified; continue working before stopping."];
   if (!report) lines.push("run-checks did not return valid evidence.");
   else {
@@ -136,9 +141,9 @@ function failureMessage(report: RunChecksReport | null, verifyOutput: string, to
     const actionable = outputLines.filter((line) => /\bERR\b|timed out|budget exhausted|verify: FAILED/.test(line));
     lines.push(`- verify: ${(actionable.length ? actionable.slice(-8) : outputLines.slice(-8)).join(" | ")}`);
   }
-  lines.push(`Prefer: ${cli} deliver --repo .  (then finish again)`);
+  lines.push(`Prefer: ${cli} deliver --repo ${repoArgument(repo)}  (then finish again)`);
   lines.push(
-    `For a genuine non-goal coverage gap only: ${cli} run-checks --repo . --session ${token} --waive <kind> --where <scope> --reason "<why>"`,
+    `For a genuine non-goal coverage gap only: ${cli} run-checks --repo ${repoArgument(repo)} --session ${token} --waive <kind> --where <scope> --reason "<why>"`,
   );
   return lines.join("\n");
 }
@@ -168,7 +173,7 @@ function thinStop(repo: string, agent: HookEventOpts["agent"], id: string): numb
     scope = resolveChangeScope(repo);
   } catch (error) {
     observeStop(repo, token, { mode: "thin", decision: "block", reason: "scope-error" }, null);
-    return block(agent, "stop", deliverBlockMessage(cli, `cannot resolve changes: ${(error as Error).message}`));
+    return block(agent, "stop", deliverBlockMessage(cli, repo, `cannot resolve changes: ${(error as Error).message}`));
   }
   const fingerprint = scope.changes.fingerprint;
   if (scope.changes.files.length === 0) {
@@ -188,6 +193,7 @@ function thinStop(repo: string, agent: HookEventOpts["agent"], id: string): numb
     "stop",
     deliverBlockMessage(
       cli,
+      repo,
       `scope=${scope.kind} base=${scope.base} changed=${scope.changes.files.length} file(s); no matching accepted delivery stamp.`,
     ),
   );
@@ -200,7 +206,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   try {
     session = readValidationSession(repo, token);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, `validation session unreadable: ${(error as Error).message}`));
+    return block(agent, "stop", deliverBlockMessage(cli, repo, `validation session unreadable: ${(error as Error).message}`));
   }
 
   // No SessionStart: still deliver via shared engine (do NOT demand a new session).
@@ -214,7 +220,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
     } catch {
       detail = delivered.output.trim().slice(0, 500);
     }
-    return block(agent, "stop", deliverBlockMessage(cli, detail));
+    return block(agent, "stop", deliverBlockMessage(cli, repo, detail));
   }
 
   // Config fingerprint change: do not trust lifecycle binding, but still accept a fresh deliver stamp path.
@@ -230,6 +236,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
       "stop",
       deliverBlockMessage(
         cli,
+        repo,
         "project hook configuration changed after SessionStart; lifecycle proof was discarded. Run deliver to re-accept the current change.",
       ),
     );
@@ -238,7 +245,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   try {
     clearValidationEvidence(repo, session);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, `could not start a fresh validation attempt: ${(error as Error).message}`));
+    return block(agent, "stop", deliverBlockMessage(cli, repo, `could not start a fresh validation attempt: ${(error as Error).message}`));
   }
 
   const run = captureStdout(() => runChecksCmd(repo, { session: token, json: true, budgetMs: 0 }));
@@ -266,7 +273,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   try {
     evidencePersisted = markLatestVerifyResult(repo, token, verifyPassed, report?.fingerprint, report?.planFingerprint);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, `could not persist verify result: ${(error as Error).message}`));
+    return block(agent, "stop", deliverBlockMessage(cli, repo, `could not persist verify result: ${(error as Error).message}`));
   }
   const passed = run.code === 0 && !!report?.ok && verifyPassed && evidencePersisted;
   observeStop(repo, token, {
@@ -283,7 +290,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   ]
     .filter(Boolean)
     .join("\n");
-  return block(agent, "stop", failureMessage(report, verifyDetails, token, cli));
+  return block(agent, "stop", failureMessage(report, verifyDetails, token, cli, repo));
 }
 
 export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {

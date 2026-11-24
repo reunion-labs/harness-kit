@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -666,4 +667,196 @@ test("a candidate prepared before landing binding must be prepared again", () =>
     () => recordAdoptionAudit(repo, candidate, { verdict: "pass", reason: "r", reportPath: metadataPath }),
     /predates landing binding, run prepare-adoption into a new empty directory/,
   );
+});
+
+function auditPass(repo: string, external: string, candidate: string): string {
+  const report = join(external, `audit-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(report, "{\"verdict\":\"pass\"}\n");
+  return recordAdoptionAudit(repo, candidate, {
+    verdict: "pass",
+    reason: "blind audit confirmed every reference",
+    reportPath: report,
+    receiptPath: join(external, `receipt-${Math.random().toString(36).slice(2)}.json`),
+  }).receiptPath;
+}
+
+test("bare path mentions that name no in-repository file are bound as unresolved instead of failing closed", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-unresolved-repo-"));
+  const external = mkdtempSync(join(tmpdir(), "hk-adoption-unresolved-external-"));
+  mkdirSync(join(repo, "skills/use/references/playbooks"), { recursive: true });
+  writeFileSync(
+    join(repo, "AGENTS.md"),
+    [
+      "Read [the skill](skills/use/SKILL.md).",
+      "Shorthand like `data-guide.md` and ../shared/outside.md are only mentions.",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(repo, "skills/use/SKILL.md"), "Playbooks: [coin](references/playbooks/coin.md).\n");
+  // Skill documents write paths relative to the Skill root, not to themselves.
+  writeFileSync(
+    join(repo, "skills/use/references/playbooks/coin.md"),
+    "Then follow `references/search-guide.md`; the external `knowledge/_keyword-index.md` is not in this repo.\n",
+  );
+  writeFileSync(join(repo, "skills/use/references/search-guide.md"), "search rules\n");
+  manifest(repo);
+  captureLegacyEntries(repo);
+
+  const candidate = join(external, "candidate");
+  const metadata = prepareAdoptionCandidate(repo, candidate);
+  assert.deepEqual(metadata.guidance.map((item) => item.path), [
+    "skills/use/SKILL.md",
+    "skills/use/references/playbooks/coin.md",
+    "skills/use/references/search-guide.md",
+  ]);
+  assert.deepEqual(metadata.unresolved, [
+    { source: "AGENTS.md", reference: "../shared/outside.md", kind: "mention", reason: "outside-repository" },
+    { source: "AGENTS.md", reference: "data-guide.md", kind: "mention", reason: "missing" },
+    { source: "skills/use/references/playbooks/coin.md", reference: "knowledge/_keyword-index.md", kind: "mention", reason: "missing" },
+  ]);
+
+  // The unresolved list is part of the content-addressed candidate metadata.
+  const metadataPath = join(candidate, "candidate.json");
+  const stored = JSON.parse(readFileSync(metadataPath, "utf8"));
+  stored.unresolved = stored.unresolved.slice(1);
+  chmodSync(metadataPath, 0o600);
+  writeFileSync(metadataPath, JSON.stringify(stored) + "\n");
+  assert.throws(
+    () => recordAdoptionAudit(repo, candidate, { verdict: "pass", reason: "r", reportPath: metadataPath }),
+    /candidate\.json hash mismatch/,
+  );
+});
+
+test("strict links and unsafe targets still fail closed even when mentions are downgraded", () => {
+  const outsideLink = mkdtempSync(join(tmpdir(), "hk-adoption-strict-outside-"));
+  writeFileSync(join(outsideLink, "AGENTS.md"), "Read [shared rules](../shared/rules.md).\n");
+  manifest(outsideLink);
+  captureLegacyEntries(outsideLink);
+  assert.throws(
+    () => prepareAdoptionCandidate(outsideLink, join(mkdtempSync(join(tmpdir(), "hk-adoption-strict-out-")), "candidate")),
+    /cannot safely resolve referenced guidance \.\.\/shared\/rules\.md from AGENTS\.md \(outside the repository\)/,
+  );
+
+  const binaryMention = mkdtempSync(join(tmpdir(), "hk-adoption-strict-binary-"));
+  writeFileSync(join(binaryMention, "AGENTS.md"), "Also see `notes/guide.md`.\n");
+  mkdirSync(join(binaryMention, "notes"));
+  writeFileSync(join(binaryMention, "notes/guide.md"), Buffer.from([0, 1, 2]));
+  manifest(binaryMention);
+  captureLegacyEntries(binaryMention);
+  assert.throws(
+    () => prepareAdoptionCandidate(binaryMention, join(mkdtempSync(join(tmpdir(), "hk-adoption-strict-bin-")), "candidate")),
+    /cannot safely resolve referenced guidance notes\/guide\.md from AGENTS\.md/,
+  );
+});
+
+test("a mention that starts resolving after the audit makes the pass receipt stale", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-unresolved-apply-"));
+  const external = mkdtempSync(join(tmpdir(), "hk-adoption-unresolved-apply-external-"));
+  // A managed path is resolved without entering the guidance inventory, so
+  // only the unresolved binding notices that it appeared after the audit.
+  writeFileSync(join(repo, "AGENTS.md"), "Routing lives in `.agents/routing.md` once generated.\n");
+  manifest(repo);
+  captureLegacyEntries(repo);
+  const candidate = join(external, "candidate");
+  const metadata = prepareAdoptionCandidate(repo, candidate);
+  assert.deepEqual(metadata.unresolved?.map((item) => item.reference), [".agents/routing.md"]);
+  const receipt = auditPass(repo, external, candidate);
+  const inspections = () => inspectManagedFiles(repo, renderTargets(loadManifest(repo)));
+  assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt);
+
+  writeFileSync(join(repo, ".agents/routing.md"), "hand-written routing\n");
+  assert.throws(
+    () => assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt),
+    /live unresolved guidance references changed after candidate preparation/,
+  );
+});
+
+test("a pre-0.7.2 candidate without an unresolved list stays valid only while nothing is unresolved", () => {
+  const { repo, external, candidate, inspections } = preparedScenario();
+  const metadataPath = join(candidate, "candidate.json");
+  const stored = JSON.parse(readFileSync(metadataPath, "utf8"));
+  assert.deepEqual(stored.unresolved, []);
+  // Re-sign the metadata exactly as 0.7.1 wrote it: no "unresolved" key at all.
+  delete stored.unresolved;
+  delete stored.candidateHash;
+  const canonical = (value: unknown): string =>
+    value === null || typeof value !== "object"
+      ? JSON.stringify(value)
+      : Array.isArray(value)
+        ? `[${value.map(canonical).join(",")}]`
+        : `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  stored.candidateHash = createHash("sha256").update(canonical(stored)).digest("hex");
+  chmodSync(metadataPath, 0o600);
+  writeFileSync(metadataPath, canonical(stored) + "\n");
+  assertManagedFileAdoptionReceipt(repo, inspections, candidate, auditPass(repo, external, candidate));
+});
+
+test("parent-target discovery does not follow a nested target's generated CLAUDE.md stub", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-nested-target-"));
+  const external = mkdtempSync(join(tmpdir(), "hk-adoption-nested-target-external-"));
+  writeFileSync(join(repo, "AGENTS.md"), "# Root rules\n");
+  mkdirSync(join(repo, "packages/child/.agents"), { recursive: true });
+  const header = "<!-- GENERATED by ai-harness — DO NOT EDIT. Source of truth: .agents/manifest.yaml. Run `harness-kit sync` to regenerate. -->";
+  writeFileSync(join(repo, "packages/child/AGENTS.md"), `${header}\n\n# child\n\nSee \`.agents/reference.md\`.\n`);
+  // An older release's stub: same shape, different header wording.
+  writeFileSync(join(repo, "packages/child/CLAUDE.md"), `@AGENTS.md\n\n${header}\n`);
+  writeFileSync(join(repo, "packages/child/.agents/reference.md"), `${header}\n\n- \`.agents/knowledge/publish.md\`\n`);
+  manifest(repo);
+  captureLegacyEntries(repo);
+  const metadata = prepareAdoptionCandidate(repo, join(external, "candidate"));
+  assert.deepEqual(metadata.guidance, []);
+  assert.deepEqual(metadata.unresolved, []);
+
+  // Anything beyond the exact stub is a hand-written entry and stays guidance.
+  writeFileSync(join(repo, "packages/child/CLAUDE.md"), `@AGENTS.md\n\n${header}\n\nAlso never deploy on Fridays.\n`);
+  const edited = prepareAdoptionCandidate(repo, join(external, "candidate-2"));
+  assert.ok(edited.guidance.some((item) => item.path === "packages/child/CLAUDE.md"));
+});
+
+test("sync treats an older release's CLAUDE.md stub as managed output", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-old-stub-"));
+  manifest(repo);
+  syncCmd(repo);
+  const old = "@AGENTS.md\n\n<!-- GENERATED by ai-harness — DO NOT EDIT. Source of truth: .agents/manifest.yaml. Run `harness-kit sync` to regenerate. -->\n";
+  writeFileSync(join(repo, "CLAUDE.md"), old);
+  syncCmd(repo);
+  assert.equal(readFileSync(join(repo, "CLAUDE.md"), "utf8"), renderTargets(loadManifest(repo)).find(([path]) => path === "CLAUDE.md")![1]);
+});
+
+test("sync --adopt-existing proves the receipt even when the repository has no legacy entry", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-no-legacy-"));
+  const external = mkdtempSync(join(tmpdir(), "hk-adoption-no-legacy-external-"));
+  manifest(repo);
+  assert.equal(captureLegacyEntries(repo).entries.length, 0);
+  assert.throws(() => syncCmd(repo, { adoptExisting: true }), /--adopt-existing requires --candidate/);
+
+  const candidate = join(external, "candidate");
+  prepareAdoptionCandidate(repo, candidate);
+  const failReport = join(external, "fail.json");
+  writeFileSync(failReport, "{\"verdict\":\"fail\"}\n");
+  const failReceipt = recordAdoptionAudit(repo, candidate, {
+    verdict: "fail",
+    reason: "missing rule",
+    reportPath: failReport,
+    receiptPath: join(external, "fail-receipt.json"),
+  }).receiptPath;
+  assert.throws(
+    () => syncCmd(repo, { adoptExisting: true, adoptionCandidate: candidate, adoptionAudit: failReceipt }),
+    /verdict is fail; pass is required/,
+  );
+  assert.equal(existsSync(join(repo, "AGENTS.md")), false);
+
+  const receipt = auditPass(repo, external, candidate);
+  writeFileSync(join(repo, ".agents/manifest.yaml"), "spec: ai-harness/v0\nidentity: { name: adoption, summary: changed after audit }\n");
+  assert.throws(
+    () => syncCmd(repo, { adoptExisting: true, adoptionCandidate: candidate, adoptionAudit: receipt }),
+    /manifest changed after candidate preparation/,
+  );
+  assert.equal(existsSync(join(repo, "AGENTS.md")), false);
+
+  manifest(repo);
+  syncCmd(repo, { adoptExisting: true, adoptionCandidate: candidate, adoptionAudit: receipt });
+  assert.match(readFileSync(join(repo, "AGENTS.md"), "utf8"), /GENERATED by ai-harness/);
+  // Re-running the same takeover is a pure no-op.
+  syncCmd(repo, { adoptExisting: true, adoptionCandidate: candidate, adoptionAudit: receipt });
 });

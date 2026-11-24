@@ -1,5 +1,6 @@
 import { format } from "node:util";
 import pkg from "../../package.json";
+import { harnessInvocation } from "../harness-cli";
 import { doctorCmd } from "./doctor";
 import { verifyCmd } from "./verify";
 import { upgradeRepository, type UpgradeReport } from "../upgrade";
@@ -79,7 +80,7 @@ function printHumanReport(report: UpgradeReport): void {
   }
   ok(`upgraded repository: ${report.fromVersion ?? "untracked"} -> ${report.toVersion}`);
   for (const path of report.changedFiles) ok(`wrote ${path}`);
-  info("Lifecycle hooks were not changed. Manage them explicitly with `harness-kit install-hooks`.");
+  info(`Lifecycle hooks were not changed. Manage them explicitly with \`${harnessInvocation(report.toVersion)} install-hooks\`.`);
 }
 
 export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): number {

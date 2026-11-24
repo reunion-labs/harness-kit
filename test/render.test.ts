@@ -16,7 +16,7 @@ test("AGENTS.md carries the GEN header, the working agreement and commands", () 
   assert.match(md, /Task Brief/);
   assert.match(md, /NEXT ACTIONS/);
   assert.match(md, /required \| agent/);
-  assert.match(md, /ask the user only for a `required \| human` decision/);
+  assert.match(md, /ask the user only for `required \| human`/);
   assert.match(md, /Informational boundaries.*are not failures/);
   assert.match(md, /pnpm test/);
 });
@@ -148,18 +148,15 @@ test("AGENTS.md runnable commands pin the lock version instead of a bare harness
     invariants: [{ id: "no-log", rule: "no logs", enforcement: { forbid_pattern: ["x"] } }],
   };
   const pinned = renderAgentsMd(manifest, { harnessVersion: "0.7.0" });
-  assert.match(pinned, /Harness CLI: run every `harness-kit <command>` here as `npx -y @erzhe\/harness-kit@0\.7\.0 <command>`/);
-  assert.match(pinned, /version pinned by `\.agents\/harness\.lock\.json`/);
-  for (const command of ["deliver", "task-start", "verify", "sync", "install-hooks", "check-loop"])
+  assert.match(pinned, /Harness CLI: `npx -y @erzhe\/harness-kit@0\.7\.0 <command>` \(pinned by `\.agents\/harness\.lock\.json`/);
+  for (const command of ["deliver", "task-start", "verify", "sync", "check-loop"])
     assert.ok(pinned.includes(`\`npx -y @erzhe/harness-kit@0.7.0 ${command}\``), command);
-  // Outside the shared GEN_HEADER comment, the only bare `harness-kit ...` is the placeholder the Harness CLI line defines.
-  const body = pinned.split("\n").filter((line) => !line.startsWith("<!-- GENERATED")).join("\n");
-  const bare = [...body.matchAll(/`harness-kit ([^`]*)`/g)].map((match) => match[1]);
-  assert.deepEqual(bare, ["<command>"]);
+  // No line, the GEN_HEADER comment included, offers a bare `harness-kit ...` command.
+  assert.deepEqual([...pinned.matchAll(/`harness-kit ([^`]*)`/g)].map((match) => match[1]), []);
 
   const unpinned = renderAgentsMd(manifest);
   assert.match(unpinned, /`npx -y @erzhe\/harness-kit@latest deliver`/);
-  assert.match(unpinned, /has no `\.agents\/harness\.lock\.json` version pin yet/);
+  assert.match(unpinned, /no `\.agents\/harness\.lock\.json` version pin yet/);
 
   // A tampered lock version never reaches a command an Agent would copy into a shell.
   const tampered = renderAgentsMd(manifest, { harnessVersion: "0.7.0; rm -rf ~" });
@@ -172,4 +169,31 @@ test("renderTargets threads the pinned version into AGENTS.md only", () => {
   assert.match(targets.get("AGENTS.md")!, /@erzhe\/harness-kit@1\.2\.3 deliver/);
   assert.equal(targets.get("CLAUDE.md"), new Map(renderTargets(base)).get("CLAUDE.md"));
   assert.equal(targets.get(".agents/reference.md"), new Map(renderTargets(base)).get(".agents/reference.md"));
+});
+
+test("the fixed working agreement stays small and states the task-start rule once", () => {
+  const manifest: Manifest = {
+    ...base,
+    routing: [{ when: "fix a bug", read: ["src/a.ts"] }],
+    modules: [{ name: "api", role: "r", entry: ["src/a.ts"], owns: ["src/api/**"], checks: ["test"] }],
+  };
+  const md = renderAgentsMd(manifest, { harnessVersion: "0.7.2" });
+  const agreement = md.slice(md.indexOf("## Working agreement"), md.indexOf("## ", md.indexOf("## Working agreement") + 3));
+  // The 700-word AGENTS.md budget is for the project; the fixed part must leave it most of the room.
+  assert.ok(agreement.trim().split(/\s+/).length <= 240, `working agreement is ${agreement.trim().split(/\s+/).length} words`);
+  assert.equal(agreement.match(/task-start/g)?.length, 1);
+});
+
+test("the contracts heading does not assume the repository versions its interfaces", () => {
+  const md = renderAgentsMd({
+    ...base,
+    contracts: [
+      { id: "http", kind: "http-api", desc: "routes", snapshot: "cat routes.txt" },
+      { id: "lib", kind: "public-api", desc: "exports", breaking_needs: "major", snapshot: "cat exports.txt" },
+    ],
+  });
+  assert.match(md, /## Contracts \(never break silently\)/);
+  assert.doesNotMatch(md, /version bump/);
+  assert.match(md, /- http \[http-api\]: routes/);
+  assert.match(md, /- lib \[public-api\] \(breaking -> major\): exports/);
 });

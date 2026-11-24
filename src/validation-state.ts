@@ -214,8 +214,9 @@ export function startValidationSession(args: {
     createdAt: now,
     updatedAt: now,
   };
+  // The latest pointer is left alone: deliver stamps are read from it, and a
+  // new session must not hide a stamp that still covers the current change.
   writePrivateJson(sessionPath(repo, token), session);
-  touchLatest(repo, token);
   pruneValidationState(repo);
   return session;
 }

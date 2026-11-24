@@ -1,4 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { repoHarnessInvocation } from "../harness-cli";
 import { collectChanges, EMPTY_TREE_BASE, GitDiffError, type ChangeSet } from "../git";
 import { loadManifest, validateManifest, type Manifest } from "../manifest";
 import { validationPlanFingerprint, type Gap, type Plan } from "../planner";
@@ -78,12 +82,42 @@ function isWaivableGap(gap: Gap): boolean {
   return gap.severity === "blocking" && WAIVABLE_GAP_KINDS.has(gap.kind);
 }
 
-function runOne(repo: string, cmd: string, timeoutMs: number): { ok: boolean; code: number; logTail: string; durationMs: number } {
+/**
+ * What a check may read about the change it is judging, so a capability can
+ * scope itself to the same task diff the planner used (e.g. only changed files):
+ * HARNESS_KIT_BASE is the resolved base commit (unset without one);
+ * HARNESS_KIT_CHANGED_FILES names a file listing changed paths one per line,
+ * relative to the target root, deleted paths included.
+ */
+function checkEnvironment(changes: ChangeSet, changedFilesPath: string | null): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Never leak an outer run's values into a nested harness-kit invocation.
+  delete env.HARNESS_KIT_BASE;
+  delete env.HARNESS_KIT_CHANGED_FILES;
+  if (changes.resolvedBase) env.HARNESS_KIT_BASE = changes.resolvedBase;
+  if (changedFilesPath) env.HARNESS_KIT_CHANGED_FILES = changedFilesPath;
+  return env;
+}
+
+function writeChangedFilesList(files: readonly string[]): { dir: string; path: string } {
+  const dir = mkdtempSync(join(tmpdir(), "harness-kit-checks-"));
+  const path = join(dir, "changed-files.txt");
+  writeFileSync(path, files.length ? `${files.join("\n")}\n` : "", { mode: 0o600 });
+  return { dir, path };
+}
+
+function runOne(
+  repo: string,
+  cmd: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+): { ok: boolean; code: number; logTail: string; durationMs: number } {
   const started = Date.now();
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.max(1, timeoutMs) : undefined;
   const r = spawnSync(cmd, {
     cwd: repo,
     shell: true,
+    env,
     encoding: "utf8",
     ...(timeout !== undefined ? { timeout } : {}),
     maxBuffer: 32 * 1024 * 1024,
@@ -323,41 +357,47 @@ export function runChecksCmd(repo: string, opts: RunChecksOpts): number {
     ? Number.POSITIVE_INFINITY
     : Date.now() + (opts.budgetMs !== undefined && opts.budgetMs > 0 ? opts.budgetMs : CHECK_BUDGET_MS);
 
-  if (!errors.length) {
-    for (const check of plan.checks) {
-      const remainingMs = checkDeadline - Date.now();
-      if (!unlimitedBudget && remainingMs <= 0) {
-        const reason = "run-checks 的检查总预算已耗尽；复杂任务请用 harness-kit deliver（无紧总预算）";
-        skipped.push({ id: check.id, reason });
-        checks.push({ id: check.id, status: "not-run", exitCode: 1, durationMs: 0 });
-        plan.gaps.push({
-          kind: "selected-check-not-run",
-          where: check.id,
-          why: reason,
-          suggestion: "使用 harness-kit deliver 做任务验收，或拆分快速自动门禁",
-          severity: "blocking",
-        });
-        continue;
+  const changedFilesList = !errors.length && plan.checks.length ? writeChangedFilesList(changes.files) : null;
+  const env = checkEnvironment(changes, changedFilesList?.path ?? null);
+  try {
+    if (!errors.length) {
+      for (const check of plan.checks) {
+        const remainingMs = checkDeadline - Date.now();
+        if (!unlimitedBudget && remainingMs <= 0) {
+          const reason = `run-checks 的检查总预算已耗尽；复杂任务请用 ${repoHarnessInvocation(repo)} deliver（无紧总预算）`;
+          skipped.push({ id: check.id, reason });
+          checks.push({ id: check.id, status: "not-run", exitCode: 1, durationMs: 0 });
+          plan.gaps.push({
+            kind: "selected-check-not-run",
+            where: check.id,
+            why: reason,
+            suggestion: `使用 ${repoHarnessInvocation(repo)} deliver 做任务验收，或拆分快速自动门禁`,
+            severity: "blocking",
+          });
+          continue;
+        }
+        const cap = capabilities[check.id];
+        if (!cap || cap.mutating || cap.background) {
+          const reason = !cap ? "capability 未声明" : cap.mutating ? "mutating capability 不可自动执行" : "background capability 不可自动执行";
+          skipped.push({ id: check.id, reason });
+          checks.push({ id: check.id, status: "not-run", exitCode: 1, durationMs: 0 });
+          plan.gaps.push({
+            kind: "selected-check-not-run",
+            where: check.id,
+            why: reason,
+            suggestion: "把自动 checks 改为可终止、无副作用的 capability；其他验证留在 routing/manual gap",
+            severity: "blocking",
+          });
+          continue;
+        }
+        const result = runOne(repo, cap.run, unlimitedBudget ? 0 : remainingMs, env);
+        checks.push({ id: check.id, status: result.ok ? "passed" : "failed", exitCode: result.code, durationMs: result.durationMs });
+        if (result.ok) passed.push(check.id);
+        else failed.push({ id: check.id, cmd: cap.run, code: result.code, logTail: result.logTail, durationMs: result.durationMs });
       }
-      const cap = capabilities[check.id];
-      if (!cap || cap.mutating || cap.background) {
-        const reason = !cap ? "capability 未声明" : cap.mutating ? "mutating capability 不可自动执行" : "background capability 不可自动执行";
-        skipped.push({ id: check.id, reason });
-        checks.push({ id: check.id, status: "not-run", exitCode: 1, durationMs: 0 });
-        plan.gaps.push({
-          kind: "selected-check-not-run",
-          where: check.id,
-          why: reason,
-          suggestion: "把自动 checks 改为可终止、无副作用的 capability；其他验证留在 routing/manual gap",
-          severity: "blocking",
-        });
-        continue;
-      }
-      const result = runOne(repo, cap.run, unlimitedBudget ? 0 : remainingMs);
-      checks.push({ id: check.id, status: result.ok ? "passed" : "failed", exitCode: result.code, durationMs: result.durationMs });
-      if (result.ok) passed.push(check.id);
-      else failed.push({ id: check.id, cmd: cap.run, code: result.code, logTail: result.logTail, durationMs: result.durationMs });
     }
+  } finally {
+    if (changedFilesList) rmSync(changedFilesList.dir, { recursive: true, force: true });
   }
 
   if (checks.length && changes.fingerprint) {

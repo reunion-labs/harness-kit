@@ -21,6 +21,7 @@ export interface DoctorOpts {
 }
 
 export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
+  const cli = repoHarnessInvocation(repo);
   let problems = 0;
   const m = loadManifest(repo);
   const render = { harnessVersion: lockedHarnessVersion(repo) };
@@ -168,9 +169,9 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   info("\n3) Generated files drift");
   try {
     for (const inspection of inspectManagedFiles(repo, renderTargets(m, render))) {
-      if (inspection.kind === "missing") warn(`${inspection.relativePath} not generated yet (run \`harness-kit sync\`)`);
+      if (inspection.kind === "missing") warn(`${inspection.relativePath} not generated yet (run \`${cli} sync\`)`);
       else if (!inspection.satisfiesDesired) {
-        err(`${inspection.relativePath} drifted from manifest (run \`harness-kit sync\`)`);
+        err(`${inspection.relativePath} drifted from manifest (run \`${cli} sync\`)`);
         problems++;
       } else if (inspection.kind === "allowed-alias") ok(`${inspection.relativePath} semantic alias -> AGENTS.md`);
       else ok(`${inspection.relativePath} in sync`);
@@ -215,7 +216,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
         if (gap.classification === "recommended") warn(text);
         else info(text);
       }
-    } else info("       details: `harness-kit doctor --details`");
+    } else info(`       details: \`${cli} doctor --details\``);
   }
 
   info("\n6) AGENTS.md size budget (must stay short — agents read it every session)");
@@ -237,12 +238,12 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   if (hooks.state === "active") {
     ok(`ACTIVE — ${hooks.evidenceAgent} observed on Stop; configured: ${configuredAgents} (optional intercept; task gate is deliver)`);
   } else if (hooks.state === "configured") {
-    warn(`CONFIGURED — ${configuredAgents}; optional intercept not yet observed. Task acceptance: harness-kit deliver`);
+    warn(`CONFIGURED — ${configuredAgents}; optional intercept not yet observed. Task acceptance: ${cli} deliver`);
   } else {
     warn(`DEGRADED — configured: ${configuredAgents}; ${hooks.issues.join("; ")}`);
   }
 
-  const guidance = buildHarnessGuidance({ manifest: m, hooks, cli: repoHarnessInvocation(repo) });
+  const guidance = buildHarnessGuidance({ manifest: m, hooks, cli });
   const visibleActions = opts.details
     ? guidance.nextActions
     : guidance.nextActions.filter((action) => action.priority === "required");
