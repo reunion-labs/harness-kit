@@ -14,13 +14,13 @@
     "cursor",
     "claude"
   ],
-  "homepage": "https://github.com/MeCKodo/harness-kit#readme",
+  "homepage": "https://github.com/reunion-labs/harness-kit#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MeCKodo/harness-kit.git"
+    "url": "git+https://github.com/reunion-labs/harness-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/MeCKodo/harness-kit/issues"
+    "url": "https://github.com/reunion-labs/harness-kit/issues"
   },
   "author": "MeCKodo (二哲) <https://erzhe.me/>",
   "license": "MIT",
