@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveChangeScope, startTaskRecord, readTaskRecord } from "../src/delivery";
+import { coveringStampEvidence, resolveChangeScope, startTaskRecord, readTaskRecord } from "../src/delivery";
 import { DELIVER_NOT_ADOPTED_EXIT_CODE, deliverCmd } from "../src/commands/deliver";
 import { syncCmd } from "../src/commands/sync";
 import { verifyCmd } from "../src/commands/verify";
@@ -328,4 +328,20 @@ test("a monorepo root without a manifest points changed files at their nested Ha
   assert.equal(touched.json.status, "not-adopted");
   const nested = touched.json.nextActions.find((action: any) => action.id === "deliver-nested-harness-targets");
   assert.deepEqual(nested.commands, [`npx -y @erzhe/harness-kit@latest deliver --repo ${join(repo, "packages/app")}`]);
+});
+
+test("coveringStampEvidence returns the deliver evidence only while its stamp covers the scope", () => {
+  const repo = fixture();
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(coveringStampEvidence(repo, resolveChangeScope(repo)), null);
+
+  const { code, json } = captureJson(() => deliverCmd(repo, { json: true }));
+  assert.equal(code, 0, JSON.stringify(json));
+  const covered = coveringStampEvidence(repo, resolveChangeScope(repo));
+  assert.equal(covered?.fingerprint, json.fingerprint);
+  assert.equal(covered?.verifyPassed, true);
+
+  write(repo, "src/core.ts", "export const value = 3;\n");
+  assert.equal(coveringStampEvidence(repo, resolveChangeScope(repo)), null);
 });

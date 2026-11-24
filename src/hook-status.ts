@@ -254,7 +254,13 @@ export function inspectAgentHookStatus(repo: string): AgentHookStatus {
   try {
     const session = readLatestHookValidationSession(repo);
     const evidence = session?.lastEvidence;
-    if (session && session.agent !== "manual" && evidence) {
+    if (session && session.agent !== "manual" && !evidence && session.lastStop?.decision === "block") {
+      // A thin Stop that blocked holds no gate evidence; like a failed execute run it is not ACTIVE.
+      evidenceAgent = session.agent;
+      evidenceAt = session.lastStop.at;
+      evidenceInvalid = true;
+      issues.push(`latest lifecycle evidence: ${session.agent} Stop blocked (${session.lastStop.reason}); run deliver, then finish the turn again`);
+    } else if (session && session.agent !== "manual" && evidence) {
       evidenceAgent = session.agent;
       evidenceAt = evidence.createdAt;
       const freshness = inspectValidationEvidenceFreshness(repo, evidence);

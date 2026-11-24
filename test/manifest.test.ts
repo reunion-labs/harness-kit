@@ -67,6 +67,16 @@ test("the repository impact map records lock-pinned commands and task-scoped del
   assert.ok(freshness?.pitfalls?.some((pitfall) => /inheritedContextKeys 拿不准就保持 task-scoped/.test(pitfall)));
 });
 
+test("the repository impact map records lifecycle proof, landing evidence, and pinned onboarding decisions", () => {
+  const manifest = loadManifest(REPO);
+  const module = (name: string) => manifest.modules?.find((item) => item.name === name);
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /thin 放行时绑定它接受的 deliver 戳.*不得移动 manual latest 指针/.test(pitfall)));
+  assert.ok(module("validation-runner")?.pitfalls?.some((pitfall) => /hookActive \/ lifecycle 默认看最近的 lifecycle 会话/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /candidate 必须绑定 landing 落点/.test(pitfall)));
+  assert.ok(module("core-gates")?.pitfalls?.some((pitfall) => /单个 glob 零命中都要报/.test(pitfall)));
+  assert.ok(module("bundled-skills")?.pitfalls?.some((pitfall) => /钉住打印它的那个版本/.test(pitfall)));
+});
+
 test("an unknown manifest spec is rejected instead of being interpreted as v0", () => {
   const m: Manifest = { spec: "ai-harness/v999", identity: { name: "x", summary: "s" } };
   const errors = validateManifest(m)

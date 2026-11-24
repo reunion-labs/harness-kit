@@ -40,9 +40,10 @@ Commands:
   accept-contract [options]        record current contract fingerprint(s) as the
                                    accepted baseline (after an intended change)
   install-hooks [options]          install git hooks and/or agent SessionStart +
-                                   Stop hooks (run-checks + verify gate)
+                                   Stop hooks (Stop requires an accepted deliver
+                                   stamp)
   onboard                          print the erzhe-harness-init skill for an
-                                   agent to follow (use via npx, always latest)
+                                   agent to follow (pins this exact version)
   check-loop                       print the harness-check-loop skill: the
                                    implement -> verify loop for an agent
   help [command]                   display help for command
@@ -250,8 +251,8 @@ Options:
 ## install-hooks
 Usage: harness-kit install-hooks [options]
 
-install git hooks and/or agent SessionStart + Stop hooks (run-checks + verify
-gate)
+install git hooks and/or agent SessionStart + Stop hooks (Stop requires an
+accepted deliver stamp)
 
 Options:
   -C, --repo <dir>          target repo dir (default: current directory)
@@ -271,8 +272,8 @@ Options:
 ## onboard
 Usage: harness-kit onboard [options]
 
-print the erzhe-harness-init skill for an agent to follow (use via npx, always
-latest)
+print the erzhe-harness-init skill for an agent to follow (pins this exact
+version)
 
 Options:
   -h, --help  display help for command

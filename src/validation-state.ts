@@ -49,7 +49,23 @@ export interface ValidationEvidence {
   errors: string[];
   verifyPassed?: boolean;
   runChecksStatus?: ValidationStatus;
+  /** Lifecycle sessions only: the hook's own run-checks + verify, or the deliver stamp a thin Stop accepted. */
+  source?: "run-checks" | "deliver-stamp";
   createdAt: string;
+}
+
+/** What one lifecycle Stop actually saw and decided. */
+export interface StopObservation {
+  at: string;
+  mode: "thin" | "execute";
+  decision: "allow" | "block";
+  /**
+   * clean: nothing changed since the session base; stamp: a matching accepted
+   * deliver stamp covered the change; checks: execute mode ran run-checks + verify;
+   * no-stamp / scope-error: thin Stop blocked.
+   */
+  reason: "clean" | "stamp" | "checks" | "no-stamp" | "scope-error";
+  fingerprint?: string;
 }
 
 export interface ValidationSession {
@@ -65,6 +81,8 @@ export interface ValidationSession {
   hookConfigFingerprint?: string;
   waivers: StoredWaiver[];
   lastEvidence?: ValidationEvidence;
+  /** Latest Stop observed for this lifecycle session (thin or execute). */
+  lastStop?: StopObservation;
   createdAt: string;
   updatedAt: string;
 }
@@ -176,7 +194,7 @@ export function startValidationSession(args: {
   const token = validationSessionToken(args.agent, args.sessionId);
   const existing = readValidationSession(repo, token);
   if (existing) {
-    const resumed = { ...existing, hookConfigFingerprint: args.hookConfigFingerprint, lastEvidence: undefined };
+    const resumed = { ...existing, hookConfigFingerprint: args.hookConfigFingerprint, lastEvidence: undefined, lastStop: undefined };
     writeValidationSession(repo, resumed);
     pruneValidationState(repo);
     return resumed;
@@ -278,6 +296,29 @@ export function writeValidationSession(repo: string, session: ValidationSession)
 
 export function recordValidationEvidence(repo: string, session: ValidationSession, evidence: ValidationEvidence): void {
   writeValidationSession(repo, { ...session, lastEvidence: evidence });
+}
+
+/**
+ * Record a lifecycle Stop on its SessionStart session. `evidence` replaces the
+ * session's gate evidence (null clears it, undefined keeps it). The manual
+ * latest pointer is deliberately left alone: deliver stamps are read from it,
+ * and observing a Stop must never change which stamp the next Stop checks.
+ * Returns false when SessionStart never created this session.
+ */
+export function recordStopObservation(
+  repoInput: string,
+  token: string,
+  observation: StopObservation,
+  evidence?: ValidationEvidence | null,
+): boolean {
+  const repo = gitRoot(repoInput);
+  const session = readValidationSession(repo, token);
+  if (!session || session.agent === "manual") return false;
+  const next: ValidationSession = { ...session, lastStop: observation, updatedAt: new Date().toISOString() };
+  if (evidence === null) delete next.lastEvidence;
+  else if (evidence) next.lastEvidence = evidence;
+  writePrivateJson(sessionPath(repo, token), next);
+  return true;
 }
 
 export interface ValidationEvidenceFreshness {

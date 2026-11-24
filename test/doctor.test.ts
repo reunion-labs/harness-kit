@@ -312,3 +312,38 @@ validation:
   assert.equal(result.code, 1);
   assert.match(result.output, /validation gate flow.*overlap module renderer owns\/tests.*unit or production files cannot satisfy/i);
 });
+
+test("doctor reports every dead owns or tests glob, not only a fully dead module", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-doctor-glob-rot-"));
+  write(repo, "src/api/handler.go", "package api\n");
+  write(repo, "src/api/handler_test.go", "package api\n");
+  write(repo, ".github/workflows/ci.yml", "on: push\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    `spec: ai-harness/v0
+identity: { name: glob-rot, summary: per-glob doctor fixture }
+modules:
+  - name: api
+    role: http api
+    entry: [src/api/handler.go]
+    owns: ["src/api/**", "src/legacy/**", ".github/**"]
+    tests: ["src/api/*_test.go", "test/api/**"]
+  - name: ghost
+    role: removed module
+    entry: [src/api/handler.go]
+    owns: ["src/ghost/**"]
+`,
+  );
+  syncCmd(repo);
+  const result = capture(() => doctorCmd(repo));
+  assert.equal(result.code, 0, result.output);
+  assert.match(result.output, /WARN module api: owns glob "src\/legacy\/\*\*" matches 0 files — changes under it can never select this module/);
+  assert.match(result.output, /WARN module api: tests glob "test\/api\/\*\*" matches 0 files — it can never map a test change or satisfy test_touch/);
+  // Dot directories match the way the planner matches them.
+  assert.doesNotMatch(result.output, /"\.github\/\*\*" matches 0/);
+  assert.doesNotMatch(result.output, /"src\/api\/\*\*" matches 0|"src\/api\/\*_test\.go" matches 0/);
+  // A module with no live owns at all keeps the stronger whole-module warning.
+  assert.match(result.output, /WARN module ghost: owns glob matches 0 files — impact planner can never select it/);
+  assert.doesNotMatch(result.output, /module ghost: owns glob "src\/ghost/);
+});

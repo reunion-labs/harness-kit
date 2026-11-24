@@ -220,6 +220,16 @@ export function stampCoversScope(repoInput: string, scope: ChangeScope): boolean
   return stamp.status === "accepted" && stamp.fingerprint === scope.changes.fingerprint;
 }
 
+/** The deliver evidence behind a stamp that covers `scope`, or null (same rule as stampCoversScope). */
+export function coveringStampEvidence(repoInput: string, scope: ChangeScope): ValidationEvidence | null {
+  if (!stampCoversScope(repoInput, scope)) return null;
+  try {
+    return readLatestValidationSession(gitRoot(repoInput))?.lastEvidence ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Keys of blocking context-freshness issues that already existed on the task
  * base (see inheritedContextKeys). The base manifest and review state are read

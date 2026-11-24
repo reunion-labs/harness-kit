@@ -178,3 +178,15 @@ test("sync pins generated entries to the lock version and warns when the running
   const verify = spawnSync(TSX, [CLI, "verify", "--repo", repo, "--json"], { encoding: "utf8" });
   assert.equal(JSON.parse(verify.stdout).messages.some((m: { text: string }) => /drifted/.test(m.text)), false);
 });
+
+test("hook and onboarding help describe the default thin Stop and the pinned version", () => {
+  const install = spawnSync(TSX, [CLI, "install-hooks", "--help"], { encoding: "utf8" });
+  assert.equal(install.status, 0);
+  assert.match(install.stdout, /Stop requires an\s+accepted deliver stamp/);
+  assert.doesNotMatch(install.stdout, /run-checks \+ verify\s+gate/);
+
+  const onboard = spawnSync(TSX, [CLI, "onboard", "--help"], { encoding: "utf8" });
+  assert.equal(onboard.status, 0);
+  assert.match(onboard.stdout, /pins this exact\s+version/);
+  assert.doesNotMatch(onboard.stdout, /always\s+latest/);
+});

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { checkLoopCmd } from "../src/commands/check-loop";
 import { onboardCmd } from "../src/commands/onboard";
 
@@ -24,7 +26,12 @@ test("onboard prints the skill body with a meta header and exits 0", () => {
   assert.equal(code, 0);
   // meta header (our instructions to the agent)
   assert.match(out, /onboarding the CURRENT repository/);
-  assert.match(out, /npx -y @erzhe\/harness-kit@latest/);
+  // H13: the entry may be @latest, but every later command pins the version that printed the skill.
+  const version = (JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { version: string })
+    .version;
+  assert.ok(out.includes(`\`npx -y @erzhe/harness-kit@${version} <cmd>\` — the exact version printing this skill`), out.slice(0, 600));
+  assert.match(out, /If the repository\nalready has that lock, use the version it pins instead/);
+  assert.doesNotMatch(out, /永远最新|always the latest/);
   // skill body (proves the file was found and appended)
   assert.match(out, /erzhe-harness-init/);
   assert.match(out, /\.agents\/manifest\.yaml/);
@@ -98,7 +105,11 @@ test("onboard separates analysis from sync and installs only required Agent hook
   assert.match(out, /全新的 Orca Agent 会话.*evidence/);
   assert.match(out, /不让用户选择.*实现方式/);
   assert.match(out, /全新的 Agent 会话/);
-  assert.match(out, /evidence.*SessionStart.*Stop.*run-checks \+ verify/);
+  // H14: default thin mode can prove the gate; the criterion matches the evidence fields.
+  assert.match(out, /`lifecycle` 记录了这个新会话的 SessionStart（`sessionStartedAt`）和最近一次 Stop（`lifecycle\.stop`）/);
+  assert.match(out, /`hookActive: true`：这次 Stop 依据的门禁证据有效/);
+  assert.match(out, /不需要为此切换到 execute 模式/);
+  assert.match(out, /`reason: clean`）只证明 hook 被调用/);
   assert.match(out, /原生 Git hooks.*可选且仅限确认安全/);
   assert.match(out, /`required \| agent`.*立即完成/);
   assert.match(out, /`required \| human`.*明确授权/);
@@ -134,4 +145,19 @@ test("check-loop prints deliver as the primary finish gate", () => {
   assert.match(out, /工作区 git diff|worktree/i);
   assert.match(out, /不要求新开会话|不要.*新会话|must not demand a new session/);
   assert.match(out, /validation gate/i);
+});
+
+test("onboard audits migrated rules where they landed and settles writing-principle conflicts", () => {
+  const { out } = captureStdout(onboardCmd);
+  // H15: the bundle carries landing evidence; auditors need no unbound side copies.
+  assert.match(out, /落点证据\*\*（`landing\/`/);
+  assert.match(out, /不要另附 bundle 之外的“落点副本”/);
+  assert.match(out, /逐条在 `generated\/` 或 `landing\/` 里找到落点/);
+  assert.match(out, /落点 inventory\/bytes\/mode/);
+  // H17: how to judge, record, and escalate conflicts with legacy writing principles.
+  assert.match(out, /### 旧入口的写作原则与门禁配置冲突时/);
+  assert.match(out, /只有在 `must_know`、`pitfalls`、knowledge 或生成入口里\*\*用文字复述\*\*/);
+  assert.match(out, /在 ledger 里记为“改写”\*\*：写清原意.*防漂移机制/);
+  assert.match(out, /告诉审计者同一判定标准/);
+  assert.match(out, /何时上报负责人\*\*：.*A 接受门禁配置.*B 缩小或去掉该声明/);
 });

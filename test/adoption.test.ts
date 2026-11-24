@@ -557,3 +557,113 @@ test("authorization refuses when the live legacy index changes after audit", () 
     /index changed/i,
   );
 });
+
+function landingScenario() {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-landing-repo-"));
+  const external = mkdtempSync(join(tmpdir(), "hk-adoption-landing-external-"));
+  writeFileSync(join(repo, "AGENTS.md"), "# Original rules\n\n- Never log tokens.\n- Run go vet before commit.\n");
+  mkdirSync(join(repo, ".agents/knowledge"), { recursive: true });
+  mkdirSync(join(repo, ".agents/checks"), { recursive: true });
+  mkdirSync(join(repo, ".agents/contracts"), { recursive: true });
+  mkdirSync(join(repo, ".agents/hooks"), { recursive: true });
+  mkdirSync(join(repo, "engineering"), { recursive: true });
+  writeFileSync(
+    join(repo, ".agents/manifest.yaml"),
+    [
+      "spec: ai-harness/v0",
+      "identity: { name: landing, summary: landing fixture }",
+      "knowledge:",
+      "  - path: knowledge/security.md",
+      "  - root: repo",
+      "    path: engineering/rules.md",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(repo, ".agents/knowledge/security.md"), "Never log tokens.\n");
+  writeFileSync(join(repo, ".agents/checks/vet.sh"), "#!/bin/sh\ngo vet ./...\n", { mode: 0o755 });
+  writeFileSync(join(repo, ".agents/contracts/http-api.snapshot"), "GET /v1/user\n");
+  symlinkSync("security.md", join(repo, ".agents/knowledge/alias.md"));
+  writeFileSync(join(repo, "engineering/rules.md"), "Run go vet before commit.\n");
+  // Machine state and evidence the bundle carries elsewhere are not landing.
+  writeFileSync(join(repo, ".agents/hooks/harness-agent-hook.sh"), "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(join(repo, ".agents/.harness-state.json"), "{\"bindings\":{}}\n");
+  writeFileSync(join(repo, ".agents/harness.lock.json"), "{}\n");
+  writeFileSync(join(repo, ".agents/routing.md"), "stale generated routing\n");
+  captureLegacyEntries(repo);
+  return { repo, external };
+}
+
+test("prepare-adoption binds where migrated rules landed, not machine state", () => {
+  const { repo, external } = landingScenario();
+  const candidate = join(external, "candidate");
+  const metadata = prepareAdoptionCandidate(repo, candidate);
+  assert.deepEqual(metadata.landing.map((item) => item.path), [
+    ".agents/checks/vet.sh",
+    ".agents/contracts/http-api.snapshot",
+    ".agents/knowledge/alias.md",
+    ".agents/knowledge/security.md",
+    "engineering/rules.md",
+  ]);
+  const security = metadata.landing.find((item) => item.path === ".agents/knowledge/security.md")!;
+  assert.equal(security.artifact, join("landing", ".agents/knowledge/security.md"));
+  assert.equal(readFileSync(join(candidate, security.artifact), "utf8"), "Never log tokens.\n");
+  assert.equal(metadata.landing.find((item) => item.path === ".agents/checks/vet.sh")!.mode, 0o755);
+  const alias = metadata.landing.find((item) => item.path === ".agents/knowledge/alias.md")!;
+  assert.equal(alias.type, "symlink");
+  assert.equal(alias.linkTarget, "security.md");
+  assert.deepEqual(JSON.parse(readFileSync(join(candidate, alias.artifact), "utf8")), {
+    linkTarget: "security.md",
+    mode: alias.mode,
+    path: ".agents/knowledge/alias.md",
+    type: "symlink",
+  });
+
+  // Landing artifacts are part of the content-addressed bundle.
+  writeFileSync(join(candidate, security.artifact), "Logging tokens is fine.\n");
+  assert.throws(
+    () => recordAdoptionAudit(repo, candidate, { verdict: "pass", reason: "r", reportPath: join(candidate, "candidate.json") }),
+    /landing evidence \.agents\/knowledge\/security\.md hash mismatch/,
+  );
+});
+
+test("changing a landing file after the audit makes the pass receipt stale", () => {
+  const { repo, external } = landingScenario();
+  const candidate = join(external, "candidate");
+  prepareAdoptionCandidate(repo, candidate);
+  const report = join(external, "audit.json");
+  writeFileSync(report, "{\"verdict\":\"pass\"}\n");
+  const receipt = recordAdoptionAudit(repo, candidate, { verdict: "pass", reason: "all rules landed", reportPath: report }).receiptPath;
+  const inspections = () => inspectManagedFiles(repo, renderTargets(loadManifest(repo)));
+  assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt);
+
+  writeFileSync(join(repo, "engineering/rules.md"), "Run go vet when convenient.\n");
+  assert.throws(() => assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt), /live landing bytes changed for engineering\/rules\.md/);
+  writeFileSync(join(repo, "engineering/rules.md"), "Run go vet before commit.\n");
+
+  chmodSync(join(repo, ".agents/checks/vet.sh"), 0o644);
+  assert.throws(() => assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt), /live landing topology or mode changed for \.agents\/checks\/vet\.sh/);
+  chmodSync(join(repo, ".agents/checks/vet.sh"), 0o755);
+
+  writeFileSync(join(repo, ".agents/knowledge/late.md"), "added after the audit\n");
+  assert.throws(() => assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt), /live landing inventory changed/);
+  unlinkSync(join(repo, ".agents/knowledge/late.md"));
+
+  // Machine state may change between audit and apply.
+  writeFileSync(join(repo, ".agents/.harness-state.json"), "{\"bindings\":{},\"reviews\":{}}\n");
+  assertManagedFileAdoptionReceipt(repo, inspections(), candidate, receipt);
+});
+
+test("a candidate prepared before landing binding must be prepared again", () => {
+  const { repo, external } = landingScenario();
+  const candidate = join(external, "candidate");
+  prepareAdoptionCandidate(repo, candidate);
+  const metadataPath = join(candidate, "candidate.json");
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+  delete metadata.landing;
+  chmodSync(metadataPath, 0o600);
+  writeFileSync(metadataPath, JSON.stringify(metadata) + "\n");
+  assert.throws(
+    () => recordAdoptionAudit(repo, candidate, { verdict: "pass", reason: "r", reportPath: metadataPath }),
+    /predates landing binding, run prepare-adoption into a new empty directory/,
+  );
+});

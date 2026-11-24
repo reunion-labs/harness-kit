@@ -1,4 +1,5 @@
 import fg from "fast-glob";
+import picomatch from "picomatch";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { buildHarnessGuidance } from "../guidance";
@@ -53,18 +54,25 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
     if (n === 0 && !inv.enforcement.allow_empty)
       warn(`invariant ${inv.id}: enforcement path_glob matches 0 files — passes without checking anything (wrong path_glob for this repo layout?)`);
   }
-  // Map rot: a module.owns glob that matches nothing means the impact planner
-  // will never select this module — a silent hole in the implement->verify loop.
+  // Map rot, per glob: one dead owns glob is a path whose changes can never
+  // select its module; a dead tests glob can never satisfy test_touch. Matching
+  // uses the planner's own picomatch semantics over one repository listing.
+  const repoFiles = (m.modules ?? []).some((mod) => mod.owns?.length || mod.tests?.length)
+    ? fg.sync("**/*", { cwd: repo, onlyFiles: true, dot: true, ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**"] })
+    : [];
+  const matchesNothing = (glob: string): boolean => {
+    const matcher = picomatch(glob, { dot: true });
+    return !repoFiles.some((file) => matcher(file));
+  };
   for (const mod of m.modules ?? []) {
-    if (!mod.owns?.length) continue;
-    const n = fg.sync(mod.owns, {
-      cwd: repo,
-      onlyFiles: true,
-      dot: true,
-      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**"],
-    }).length;
-    if (n === 0)
+    const deadOwns = (mod.owns ?? []).filter(matchesNothing);
+    if (deadOwns.length && deadOwns.length === mod.owns!.length)
       warn(`module ${mod.name}: owns glob matches 0 files — impact planner can never select it (stale owns for this layout?)`);
+    else
+      for (const glob of deadOwns)
+        warn(`module ${mod.name}: owns glob "${glob}" matches 0 files — changes under it can never select this module (stale path?)`);
+    for (const glob of (mod.tests ?? []).filter(matchesNothing))
+      warn(`module ${mod.name}: tests glob "${glob}" matches 0 files — it can never map a test change or satisfy test_touch (stale path?)`);
   }
   for (const glob of m.validation?.required_coverage ?? []) {
     const n = fg.sync(glob, {
