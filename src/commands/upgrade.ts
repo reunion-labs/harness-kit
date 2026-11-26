@@ -3,7 +3,6 @@ import pkg from "../../package.json";
 import { harnessInvocation } from "../harness-cli";
 import { doctorCmd } from "./doctor";
 import { verifyCmd } from "./verify";
-import { inspectAgentHookStatus } from "../hook-status";
 import { UPGRADE_HOOKS_NOTE, upgradeRepository, type UpgradeReport } from "../upgrade";
 import { err, info, ok, warn } from "../util";
 
@@ -63,15 +62,40 @@ function runJsonVerification(repo: string, report: UpgradeReport): number {
   return 0;
 }
 
+function hookLines(report: UpgradeReport, planned: boolean): void {
+  const hooks = report.hooks;
+  if (!hooks) {
+    if (!planned)
+      info(
+        `No Harness lifecycle hooks are installed here; the optional session gate is added with ` +
+          `\`${harnessInvocation(report.toVersion)} install-hooks --repo . --stop --agents <client>\`.`,
+      );
+    return;
+  }
+  const agents = hooks.agents.join(",");
+  if (hooks.status === "refreshed")
+    info(
+      planned
+        ? `Lifecycle hooks (${agents}): the managed runner and client configs are refreshed in the same transaction.`
+        : `Lifecycle hooks (${agents}): refreshed in place. The next Stop through the new runner rebinds a session that started before ` +
+            "the upgrade, so deliver and finish this turn to prove hookActive; third-party hook edits still need a fresh session.",
+    );
+  else if (hooks.status === "current") info(`Lifecycle hooks (${agents}): already current.`);
+  else warn(`Lifecycle hooks (${agents}): not refreshed here (${hooks.reason}); run \`${hooks.command}\` after the upgrade.`);
+}
+
 function printHumanReport(report: UpgradeReport): void {
   if (report.status === "blocked") {
     for (const message of report.errors) err(message);
     return;
   }
   if (report.status === "upgrade-available") {
-    warn(`upgrade available: ${report.fromVersion ?? "untracked"} -> ${report.toVersion}`);
+    // --check exits 2 here: "upgrade available" is a result, not a failure.
+    warn(`upgrade available: ${report.fromVersion ?? "untracked"} -> ${report.toVersion} (exit 2 = upgrade available, not an error)`);
     if (report.pendingMigrations.length) info(`Pending migrations: ${report.pendingMigrations.join(", ")}`);
     if (report.changedFiles.length) info(`Files to update: ${report.changedFiles.join(", ")}`);
+    hookLines(report, true);
+    for (const note of report.notes) if (note !== UPGRADE_HOOKS_NOTE) info(note);
     if (report.dirtyFiles.length) warn("apply is blocked until the target Git scope is clean");
     return;
   }
@@ -82,28 +106,7 @@ function printHumanReport(report: UpgradeReport): void {
   ok(`upgraded repository: ${report.fromVersion ?? "untracked"} -> ${report.toVersion}`);
   for (const path of report.changedFiles) ok(`wrote ${path}`);
   for (const note of report.notes) if (note !== UPGRADE_HOOKS_NOTE) warn(note);
-  info(`Lifecycle hooks were not changed. Manage them explicitly with \`${harnessInvocation(report.toVersion)} install-hooks\`.`);
-}
-
-/**
- * upgrade never rewrites hooks (they span the repository, Git admin, and user
- * directories), so installed hooks keep the previous runner pin. Name the exact
- * refresh instead of leaving doctor to report a DEGRADED runner.
- */
-function noteHookRefresh(repo: string, report: UpgradeReport): void {
-  if (report.status !== "upgraded") return;
-  let configured: string[] = [];
-  try {
-    configured = inspectAgentHookStatus(repo).configuredAgents;
-  } catch {
-    return;
-  }
-  if (!configured.length) return;
-  report.notes.push(
-    `installed lifecycle hooks still pin the previous runner; refresh them: ` +
-      `${harnessInvocation(report.toVersion)} install-hooks --repo . --stop --agents ${configured.join(",")} ` +
-      "(then deliver, and prove hookActive in a fresh Agent session)",
-  );
+  hookLines(report, false);
 }
 
 export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): number {
@@ -112,7 +115,6 @@ export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): numbe
     targetVersion: pkg.version,
     check: options.check,
   });
-  noteHookRefresh(repo, report);
   if (options.json) {
     let code = report.status === "blocked" ? 1 : report.status === "upgrade-available" ? 2 : 0;
     if (!options.check && (report.status === "upgraded" || report.status === "current"))
@@ -125,10 +127,11 @@ export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): numbe
   if (report.status === "blocked") return 1;
   if (report.status === "upgrade-available") return 2;
   if (options.check) return 0;
-  info("\nRunning post-upgrade doctor --details ...");
-  const doctorCode = doctorCmd(repo, { details: true });
-  info("\nRunning post-upgrade verify --details ...");
-  const verifyCode = verifyCmd(repo, { details: true, recordManualEvidence: false });
+  // Compact like a plain run: on-demand boundaries stay folded (--details expands them).
+  info("\nRunning post-upgrade doctor ...");
+  const doctorCode = doctorCmd(repo);
+  info("\nRunning post-upgrade verify ...");
+  const verifyCode = verifyCmd(repo, { recordManualEvidence: false });
   if (doctorCode !== 0 || verifyCode !== 0) {
     err("upgrade applied, but post-upgrade verification is incomplete");
     return 1;

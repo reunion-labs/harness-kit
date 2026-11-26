@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { installHooksCmd } from "../src/commands/install-hooks";
-import { installStopHooks } from "../src/commands/stop-hooks";
+import { installHooksCommand, installStopHooks } from "../src/commands/stop-hooks";
 import { collectChanges, EMPTY_TREE_BASE } from "../src/git";
 import { agentHookConfigurationFingerprint, inspectAgentHookStatus } from "../src/hook-status";
 import { loadManifest } from "../src/manifest";
@@ -834,6 +834,39 @@ test("installed outer commands still block when the shared runner is missing", (
   });
   assert.equal(codexStop.status, 0);
   assert.equal(JSON.parse(codexStop.stdout).decision, "block");
+
+  // A missing runner blocks a turn once: the client's re-run is allowed, so it cannot loop.
+  for (const command of [claude.hooks.Stop[0].hooks[0].command, codex.hooks.Stop[0].hooks[0].command]) {
+    const rerun = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":true}', encoding: "utf8" });
+    assert.equal(rerun.status, 0);
+    assert.equal(rerun.stdout, "");
+    const fresh = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":false}', encoding: "utf8" });
+    assert.equal(JSON.parse(fresh.stdout).decision, "block");
+  }
+});
+
+test("the 0.8.0 unconditional Stop fallback stays managed and is replaced in place", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const settingsPath = join(dir, ".claude", "settings.json");
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  const guarded = settings.hooks.Stop[0].hooks[0].command;
+  settings.hooks.Stop[0].hooks[0].command = guarded.replace(/ \|\| grep -Eq '[^']*'/, "");
+  assert.notEqual(settings.hooks.Stop[0].hooks[0].command, guarded);
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  assert.deepEqual(inspectAgentHookStatus(dir).configuredAgents, ["claude"]);
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const ours = JSON.parse(readFileSync(settingsPath, "utf8")).hooks.Stop.flatMap((group: any) => group.hooks)
+    .filter((hook: any) => /harness-agent-hook\.sh/.test(hook.command));
+  assert.deepEqual(ours.map((hook: any) => hook.command), [guarded]);
+});
+
+test("the install-hooks command names the Codex user-dispatcher flag only in a linked worktree", () => {
+  const dir = freshRepo();
+  assert.match(installHooksCommand(dir, ["claude", "codex"]), / install-hooks --repo \. --stop --agents claude,codex$/);
+  const linked = addLinkedWorktree(dir);
+  assert.match(installHooksCommand(linked, ["codex"]), / --agents codex --allow-user-dispatcher$/);
+  assert.doesNotMatch(installHooksCommand(linked, ["claude"]), /--allow-user-dispatcher/);
 });
 
 test("hook failure fallbacks never offer a bare harness-kit command, and 0.7.1 fallbacks are replaced in place", () => {

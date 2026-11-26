@@ -32,8 +32,7 @@ Out of scope (do NOT modify here):
 
 ## Dependencies
 
-Upstream:
-- 少量运行时依赖（见 package.json）
+Upstream: 少量运行时依赖（见 package.json）
 
 Downstream:
 - npm registry

@@ -2,21 +2,53 @@ import fg from "fast-glob";
 import picomatch from "picomatch";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { buildHarnessGuidance } from "../guidance";
+import { buildHarnessGuidance, contextFreshnessActions } from "../guidance";
 import { lockedHarnessVersion, repoHarnessInvocation } from "../harness-cli";
 import { inspectAgentHookStatus } from "../hook-status";
-import { loadManifest, validateManifest } from "../manifest";
+import { loadManifest, validateManifest, type Manifest } from "../manifest";
 import { inspectManagedFiles } from "../managed-files";
 import { agentsMdSize, renderTargets } from "../render";
-import { inspectContextFreshness, readState, resolveKnowledgePath } from "../state";
-import { err, info, ok, warn } from "../util";
+import { inspectContextFreshness, readState, resolveKnowledgePath, type ContextFreshnessIssue } from "../state";
+import { isHarnessGenerated } from "../adoption";
+import { err, info, ok, readText, warn } from "../util";
 import { inspectValidationGateHealth } from "../validation-gates";
 
 // AGENTS.md must stay short (progressive disclosure): it is an index, not a dump.
 // The word budget counts what the repository controls; the fixed Harness
 // working agreement, header, and map (about 300 words) are the same everywhere.
+// countWords makes the budget language-neutral (Han / Kana count half a word).
 const AGENTS_MAX_LINES = 150;
 const AGENTS_MAX_CONTENT_WORDS = 500;
+
+const PINNED_INVOCATION = /@erzhe\/harness-kit@(\d+\.\d+\.\d+[0-9A-Za-z.+-]*)/g;
+// The 0.7.x init scaffold of .agents/adoption.md named a bare command.
+const LEGACY_ADOPTION_LINE = "(`harness-kit verify`)";
+
+/**
+ * Hand-written Harness commands that upgrade cannot rewrite: a pin to another
+ * version than the lock, or the bare command of the 0.7.x adoption template.
+ * Scans the manifest, hand-written .agents documents, and root=repo knowledge
+ * documents; journal ADRs are skipped.
+ */
+function staleHandWrittenInvocations(repo: string, m: Manifest, locked: string | null): string[] {
+  const files = new Set<string>([".agents/manifest.yaml"]);
+  // Journal ADRs are history and may name the versions they were written for.
+  for (const path of fg.sync([".agents/**/*.md"], { cwd: repo, dot: true, onlyFiles: true, ignore: [".agents/adoption/**", "**/journal/**"] }))
+    files.add(path);
+  for (const knowledge of m.knowledge ?? [])
+    if (knowledge.root === "repo" && knowledge.role !== "journal" && /\.(md|mdx|markdown|txt)$/i.test(knowledge.path)) files.add(knowledge.path);
+  const findings: string[] = [];
+  for (const rel of [...files].sort()) {
+    const text = readText(join(repo, rel));
+    if (text === null || isHarnessGenerated(text)) continue;
+    text.split("\n").forEach((line, index) => {
+      for (const match of line.matchAll(PINNED_INVOCATION))
+        if (locked && match[1] !== locked) findings.push(`${rel}:${index + 1} pins @erzhe/harness-kit@${match[1]}; the lock pins ${locked}`);
+      if (line.includes(LEGACY_ADOPTION_LINE)) findings.push(`${rel}:${index + 1} names a bare \`harness-kit verify\`; say "the pinned \`verify\` command in AGENTS.md"`);
+    });
+  }
+  return findings;
+}
 
 export interface DoctorOpts {
   details?: boolean;
@@ -184,6 +216,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   }
 
   info("\n4) Knowledge freshness");
+  let freshnessIssues: ContextFreshnessIssue[] = [];
   const prev = readState(repo);
   const boundCount = (m.knowledge ?? []).filter((item) => item.binds?.length || item.authority).length +
     (m.modules ?? []).filter((item) => item.entry?.length).length;
@@ -191,6 +224,7 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
     ok("no knowledge bound to source files (nothing to drift)");
   } else {
     const freshness = inspectContextFreshness(repo, m);
+    freshnessIssues = freshness;
     if (!prev && !(m.knowledge ?? []).some((item) => item.authority))
       warn("no legacy freshness baseline yet; use `record-context-review` for durable Agent-reviewed context");
     for (const issue of freshness) {
@@ -221,13 +255,25 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
     } else info(`       details: \`${cli} doctor --details\``);
   }
 
+  const stalePins = staleHandWrittenInvocations(repo, m, render.harnessVersion);
+  if (stalePins.length) {
+    info("\n5b) Hand-written Harness commands (upgrade never edits these files)");
+    for (const finding of stalePins) warn(finding);
+  }
+
   info("\n6) AGENTS.md size budget (must stay short — agents read it every session)");
   const size = agentsMdSize(m, render);
   const sizeText =
     `AGENTS.md ${size.lines} lines / ${size.words} words; repository content ${size.contentWords} words ` +
-    `(budget ${AGENTS_MAX_LINES} lines / ${AGENTS_MAX_CONTENT_WORDS} content words; fixed Harness text not counted)`;
+    `(budget ${AGENTS_MAX_LINES} lines / ${AGENTS_MAX_CONTENT_WORDS} content words; fixed Harness text not counted; ` +
+    "a Han / Kana character is half a word)";
   if (size.lines > AGENTS_MAX_LINES || size.contentWords > AGENTS_MAX_CONTENT_WORDS) {
     warn(`${sizeText}. Move detail into .agents/knowledge/ and keep AGENTS.md as an index.`);
+    const largest = size.sections.slice(0, 3).map((section) => `${section.heading} ${section.words}`).join(", ");
+    info(
+      `       largest sections (words): ${largest}. Keep each rule to the sentence an agent must obey and move its ` +
+        "rationale and scope into knowledge; this is advisory maintenance, not an upgrade step.",
+    );
   } else {
     ok(`${sizeText} — within budget`);
   }
@@ -244,6 +290,19 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   }
 
   const guidance = buildHarnessGuidance({ manifest: m, hooks, cli });
+  // An ERR above always comes with a required step, like verify.
+  guidance.nextActions.unshift(...contextFreshnessActions(freshnessIssues, cli));
+  if (problems && !guidance.nextActions.some((action) => action.priority === "required"))
+    guidance.nextActions.unshift({
+      id: "fix-doctor-problems",
+      priority: "required",
+      owner: "agent",
+      when: "before-finish",
+      title: `Fix the ${problems} doctor problem(s) reported above`,
+      reason: "doctor found configuration problems (ERR lines above).",
+      commands: [`${cli} doctor --repo .`],
+      completion: "doctor reports repository configuration healthy.",
+    });
   const visibleActions = opts.details
     ? guidance.nextActions
     : guidance.nextActions.filter((action) => action.priority === "required");

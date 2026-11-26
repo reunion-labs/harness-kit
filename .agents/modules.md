@@ -30,8 +30,8 @@
 - Pitfall: AGENTS.md 要保持精简，别把 routing/modules 全文塞进去
 - Pitfall: sync / verify / doctor / adoption 必须用同一个 lock 版本渲染，upgrade 用目标版本渲染，否则入口会被判为漂移
 - Pitfall: 固定 Working agreement 控制在 240 词内（有测试）；GEN_HEADER 不写版本也不写裸命令，改它时旧 CLAUDE.md stub 靠 isHarnessGenerated 的精确 stub 识别才能继续被刷新
-- Pitfall: 词数预算只算仓库内容：agentsMdLines 把固定文本标成 fixed，新增固定文案必须走 fixed.push；countWords 不把 CJK 旁的空格算成词
-- Pitfall: 不变量渲染带 id（scope / routing / 模块卡按 id 引用）；上下游逐条一行，条目里可能有逗号、分号
+- Pitfall: 词数预算只算仓库内容：agentsMdLines 把固定文本标成 fixed，新增固定文案必须走 fixed.push；countWords 里汉字 / 假名每个算半个词（不能再按空白把整段中文算成 1 个词），CJK 旁的空格和纯符号 token 不计
+- Pitfall: 不变量渲染带 id（scope / routing / 模块卡按 id 引用）；上下游两条以上逐条一行（条目里可能有逗号、分号），只有一条时保持行内
 
 ## enforce — 声明式不变量执行（确定性，无 LLM）
 - Entry: `src/enforce.ts`
@@ -47,7 +47,8 @@
 - Checks: `test`, `typecheck`
 - Test touch: `required`
 - Pitfall: 保持纯函数：不碰 git / fs / 进程，只做 glob 匹配，方便单测
-- Pitfall: HARNESS_COVERED_GLOBS（.agents/**、生成入口、install-hooks 写的客户端配置）由 verify 判定，不算 unmapped / required-unmapped；模块仍可 owns 它们来加检查
+- Pitfall: HARNESS_COVERED_GLOBS（.agents/**、生成入口、install-hooks 写的客户端配置）由 verify 判定，不算 unmapped / required-unmapped，全是这类路径的改动也不报 no-checks-selected；它们只免检、不挑选检查，模块仍可 owns 它们来加检查
+- Pitfall: 改动的文件被可自动执行的 capability 的 run 命令引用时（脚本或目录前缀）选中该 capability；mutating / background 不选
 
 ## git-diff — 安全收集 committed / staged / unstaged / untracked 改动并生成指纹
 - Entry: `src/git.ts`
@@ -75,7 +76,7 @@
 - Pitfall: SessionStart 新建会话不得移动 manual latest 指针，否则会话前仍覆盖当前改动的 deliver 戳会被藏掉
 - Pitfall: check 进程的 HARNESS_KIT_BASE / HARNESS_KIT_CHANGED_FILES 由 run-checks 注入，外层同名变量必须先清掉
 - Pitfall: lifecycle.active 只要求配置未变且门禁证据当时通过（evidencePassed）；证据过期（evidenceCurrent=false）不让 hook 状态 DEGRADED
-- Pitfall: evidence 顶层 session/agent 描述最近记录（record.kind），hookConfigurationCurrent 跟随 hook 证明来源，不能在 lifecycle 当前时报 false
+- Pitfall: evidence 顶层 session/agent 描述最近记录（record.kind），hookConfigurationCurrent 跟随 hook 证明来源，不能在 lifecycle 当前时报 false；手动记录带 deliveredIn（task 记录所属的 Agent 会话），record.createdAt 是证据写入时间
 
 ## delivery — 任务 scope 解析、deliver 编排与 delivery stamp
 - Entry: `src/delivery.ts`, `src/commands/deliver.ts`
@@ -115,6 +116,8 @@
 - Pitfall: Stop 拦截文案写被门禁 target 的绝对 --repo，不能写 --repo .
 - Pitfall: runner 先读完 stdin 再转给 CLI；CLI 不可用时干净工作区放行，脏工作区每轮只拦一次（stop_hook_active / loop_count 即放行），绝不无限拦截
 - Pitfall: CLI 侧 loop-exit 只在 continuing 且 stop-guard 指纹与上次拦截相同时放行，记 lifecycle reason=loop-exit，永远不算门禁证据
+- Pitfall: 客户端配置里的外层 Stop 兜底也要带 stop_hook_active 守卫（runner 缺失时 bash 不读 stdin）；改命令形状时把旧形状留在 isInstalledAgentHookCommand 的识别里
+- Pitfall: 会话中途刷新 hook（upgrade / install-hooks）后，Stop 只在当前 runner 就是本版本、且除 Harness 自己的条目外客户端配置与 SessionStart 时一致才 rebind；第三方改动、linked Codex 一律要新会话
 
 ## managed-generation — 生成文件接管、软链接边界与事务写入
 - Entry: `src/managed-files.ts`
@@ -130,6 +133,7 @@
 - Pitfall: sync 不得写 .agents/.harness-state.json；语义新鲜度只由 record-context-review 推进
 - Pitfall: candidate 必须绑定 landing 落点（.agents 下手写文件、lock、复核 state + root=repo knowledge）；只排除 manifest、生成入口、adoption/、hooks/；.agents 外的接入改动进 worktree 证据，INDEX.md 也进 hash
 - Pitfall: 普通 sync 不创建首个 AGENTS.md：要么 --adopt-existing + pass 回执，要么 --create-entry 且仓内没有任何 agent 指引（含其他客户端规则文件）
+- Pitfall: sync / upgrade 只删除 manifest 已不再声明的 context 的复核记录（retired review），不新增、不刷新任何复核
 - Pitfall: 其他客户端的规则文件（.cursor/rules、copilot-instructions 等）是 guidance 根，只进 bundle，不做 legacy 快照；纯路径提及以非 ASCII 路径字符为边界，未解析的域名形提及丢弃
 - Pitfall: 引用闭包只把找不到仓内文件的纯路径提及降级为 unresolved（进 candidate hash、apply 时重比）；链接 / @import 缺失或在仓外、以及存在但不安全的目标仍 fail closed
 - Pitfall: 生成物判定统一走 isHarnessGenerated（生成标记开头或精确 CLAUDE.md stub），不要再各处写 startsWith(marker)
@@ -145,7 +149,7 @@
 - Pitfall: 运行中的 CLI 版本就是目标版本；core 不能访问 registry、CI 或代码托管 API
 - Pitfall: apply 必须拒绝 dirty 仓库，并把 manifest、生成入口和 lock 放入同一次 managed-file 事务
 - Pitfall: 只解析而没有迁移时必须保留 manifest 原始字节，不能顺手格式化
-- Pitfall: Hook 不属于仓内原子事务；当前 upgrade 不得安装、卸载或刷新 Hook，但装了 Hook 时要在 notes 给出精确的 install-hooks 命令
+- Pitfall: upgrade 在同一事务里原位刷新已由 Harness 管理的项目级 hook（runner + 已配置客户端的配置，保留第三方条目）；不新装、不卸载；linked Codex 用户分发器横跨用户目录和 Git admin，只给出带 --allow-user-dispatcher 的精确命令
 - Pitfall: upgrade 只刷新已有入口，不创建首个 AGENTS.md（那是接入盲审的终点）
 - Pitfall: lock 版本会进入 Agent 复制执行的命令，只接受纯 semver，其余一律回退 @latest
 
@@ -169,7 +173,7 @@
 - Pitfall: verify --json 对 repo-controlled matcher/文件系统异常也必须只输出一份结构化失败报告
 - Pitfall: accept-contract 必须先校验 manifest，基线只能写 .agents/contracts 的安全普通文件
 - Pitfall: doctor 的影响面 glob 检查用 planner 同款 picomatch（含点目录）逐个求值，owns 与 tests 的单个 glob 零命中都要报
-- Pitfall: verify 给 invariant / contract 的 check 注入任务 diff（snapshot 不注入）；verify 失败时 nextActions 必须有 required 项，不能显示 nothing required
+- Pitfall: verify 给 invariant / contract 的 check 注入任务 diff（snapshot 不注入）；verify / doctor 报 ERR 时 nextActions 必须有 required 项，不能显示 nothing required；说明性信息要放在 NEXT ACTIONS 之前
 
 ## bundled-skills — onboard / check-loop 技能的定位、输出与维护
 - Entry: `src/skill.ts`

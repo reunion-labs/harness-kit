@@ -15,6 +15,12 @@ function safeStr(v: unknown): string {
   return JSON.stringify(v);
 }
 
+function dependencyLines(label: string, items: readonly unknown[], prefix: string): string[] {
+  if (items.length === 1) return [`${prefix}${label}: ${safeStr(items[0])}`];
+  const indent = prefix ? "  " : "";
+  return [`${prefix}${label}:`, ...items.map((item) => `${indent}- ${safeStr(item)}`)];
+}
+
 /** Generated tool files. Each returns [relPath, content]. Routing/modules only when present. */
 export function renderTargets(m: Manifest, opts: RenderOptions = {}): Array<[string, string]> {
   const targets: Array<[string, string]> = [
@@ -93,11 +99,12 @@ function agentsMdLines(m: Manifest, opts: RenderOptions): Array<{ text: string; 
     content.push("");
   }
 
-  // One item per line: an item may itself contain commas or semicolons.
+  // Several items get one line each (an item may itself contain commas or
+  // semicolons); a single item stays inline instead of a one-entry list.
   if (id.upstream?.length || id.downstream?.length) {
     content.push("## Dependencies");
-    if (id.upstream?.length) content.push("", "Upstream:", ...id.upstream.map((s) => `- ${safeStr(s)}`));
-    if (id.downstream?.length) content.push("", "Downstream:", ...id.downstream.map((s) => `- ${safeStr(s)}`));
+    if (id.upstream?.length) content.push("", ...dependencyLines("Upstream", id.upstream, ""));
+    if (id.downstream?.length) content.push("", ...dependencyLines("Downstream", id.downstream, ""));
     content.push("");
   }
 
@@ -159,14 +166,19 @@ export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
   return agentsMdLines(m, opts).map((line) => line.text).join("\n");
 }
 
-// A space next to CJK text is optional typography; it must not change the count.
-const CJK = String.raw`[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]`;
-const CJK_SPACING = new RegExp(String.raw`\s+(?=${CJK})|(?<=${CJK})\s+`, "gu");
+// Han and Kana are written without spaces, so whitespace splitting counted a
+// whole Chinese paragraph as one word. Each such character counts as half a
+// word (about one English word per two characters); Hangul is space-separated
+// and splits like other text. Spacing around CJK never changes the count, and a
+// token without a letter or digit (a Markdown bullet, "##", "|") is not a word.
+const UNSPACED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
+const WIDE_PUNCTUATION = /[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g;
 
-/** Whitespace-separated words, ignoring spacing between CJK and other text. */
 export function countWords(text: string): number {
-  const normalized = text.replace(CJK_SPACING, "").trim();
-  return normalized ? normalized.split(/\s+/).length : 0;
+  const unspaced = text.match(UNSPACED_SCRIPT)?.length ?? 0;
+  const rest = text.replace(UNSPACED_SCRIPT, " ").replace(WIDE_PUNCTUATION, " ");
+  const words = rest.split(/\s+/).filter((token) => /[\p{L}\p{N}]/u.test(token)).length;
+  return words + Math.ceil(unspaced / 2);
 }
 
 export interface AgentsMdSize {
@@ -174,15 +186,25 @@ export interface AgentsMdSize {
   words: number;
   /** Words the repository controls: everything except the fixed Harness working agreement, header, and map. */
   contentWords: number;
+  /** contentWords per repository section ("## Invariants (must hold)", ...), largest first. */
+  sections: Array<{ heading: string; words: number }>;
 }
 
 export function agentsMdSize(m: Manifest, opts: RenderOptions = {}): AgentsMdSize {
   const lines = agentsMdLines(m, opts);
   const text = lines.map((line) => line.text).join("\n");
+  const bySection = new Map<string, string[]>();
+  let heading = "(title and summary)";
+  for (const line of lines) {
+    if (line.fixed) continue;
+    if (line.text.startsWith("## ")) heading = line.text.slice(3);
+    bySection.set(heading, [...(bySection.get(heading) ?? []), line.text]);
+  }
   return {
     lines: text.split("\n").length,
     words: countWords(text),
     contentWords: countWords(lines.filter((line) => !line.fixed).map((line) => line.text).join("\n")),
+    sections: [...bySection].map(([name, body]) => ({ heading: name, words: countWords(body.join("\n")) })).sort((a, b) => b.words - a.words),
   };
 }
 
@@ -260,8 +282,8 @@ export function renderModulesMd(m: Manifest): string {
     if (mod.gates?.length) L.push(`- Validation gates: ${mod.gates.map((s) => `\`${safeStr(s)}\``).join(", ")}`);
     if (mod.test_touch) L.push(`- Test touch: \`${safeStr(mod.test_touch)}\``);
     if (mod.playbook) L.push(`- Playbook: \`${safeStr(mod.playbook)}\``);
-    if (mod.upstream?.length) L.push("- Upstream:", ...mod.upstream.map((s) => `  - ${safeStr(s)}`));
-    if (mod.downstream?.length) L.push("- Downstream:", ...mod.downstream.map((s) => `  - ${safeStr(s)}`));
+    if (mod.upstream?.length) L.push(...dependencyLines("Upstream", mod.upstream, "- "));
+    if (mod.downstream?.length) L.push(...dependencyLines("Downstream", mod.downstream, "- "));
     if (mod.must_know?.length) for (const k of mod.must_know) L.push(`- Must know: ${safeStr(k)}`);
     if (mod.pitfalls?.length) for (const p of mod.pitfalls) L.push(`- Pitfall: ${safeStr(p)}`);
     L.push("");

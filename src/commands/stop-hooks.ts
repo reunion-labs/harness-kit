@@ -29,14 +29,27 @@ const LEGACY_HOOK_FAILURE_MESSAGES = [
   "harness-kit hook runner is missing or failed; run harness-kit run-checks and harness-kit verify manually",
 ];
 
-function hookCommand(agent: AgentTool, event: "session-start" | "stop", message = HOOK_FAILURE_MESSAGE): string {
+// When the runner file is missing, bash fails before reading stdin, so the
+// fallback can still see the client's re-run marker and blocks a turn only once.
+// Cursor bounds its own loop with loop_limit.
+const STOP_RERUN_GUARD = `grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'`;
+
+type StopFallbackShape = "guarded" | "unconditional";
+
+function hookCommand(
+  agent: AgentTool,
+  event: "session-start" | "stop",
+  message = HOOK_FAILURE_MESSAGE,
+  shape: StopFallbackShape = "guarded",
+): string {
   const run = `bash "$(git rev-parse --show-toplevel)/${SCRIPT_REL}" ${agent} ${event}`;
   if (event === "stop") {
     const output =
       agent === "cursor"
         ? `{"followup_message":"${message}"}`
         : `{"decision":"block","reason":"${message}"}`;
-    return `${run} || printf '%s\\n' '${output}'`;
+    const guard = agent !== "cursor" && shape === "guarded" ? ` || ${STOP_RERUN_GUARD}` : "";
+    return `${run}${guard} || printf '%s\\n' '${output}'`;
   }
   return `${run} || { echo '${message}' >&2; exit 2; }`;
 }
@@ -59,7 +72,11 @@ export function isInstalledAgentHookCommand(
   let candidate = command.trim();
   const override = candidate.match(LOCAL_CLI_OVERRIDE);
   if (override) candidate = candidate.slice(override[0].length).trim();
-  return [HOOK_FAILURE_MESSAGE, ...LEGACY_HOOK_FAILURE_MESSAGES].some((message) => candidate === hookCommand(agent, event, message));
+  // 0.8.0 and earlier wrote the unconditional Stop fallback; it stays managed so
+  // install-hooks / upgrade replace it in place.
+  return [HOOK_FAILURE_MESSAGE, ...LEGACY_HOOK_FAILURE_MESSAGES].some((message) =>
+    (["guarded", "unconditional"] as const).some((shape) => candidate === hookCommand(agent, event, message, shape)),
+  );
 }
 
 export function installedAgentHookRunnerScript(): string {
@@ -69,7 +86,8 @@ export function installedAgentHookRunnerScript(): string {
 AGENT="$1"
 EVENT="$2"
 ROOT=""
-PAYLOAD="$(cat)"
+# Clients always pipe the hook input; a manual probe from a terminal gets {}.
+if [ -t 0 ]; then PAYLOAD="{}"; else PAYLOAD="$(cat)"; fi
 
 # The client re-runs Stop after a block with stop_hook_active (Claude Code,
 # Codex) or a loop_count (Cursor); the host's own JSON, so a text match is enough.
@@ -198,6 +216,36 @@ function renderGroupStyle(
   return JSON.stringify(json, null, 2) + "\n";
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+/**
+ * A client config with Harness's own hook entries removed: the part a Harness
+ * refresh (install-hooks or upgrade) must leave untouched. null when the bytes
+ * cannot be parsed; "(missing)" when the file does not exist.
+ */
+export function foreignAgentHookConfig(rel: string, content: string | null, agent: AgentTool): string | null {
+  if (content === null) return "(missing)";
+  if (rel.endsWith(".toml")) return content;
+  const json = readJson(content);
+  if (json == null) return null;
+  const hooks = json.hooks;
+  if (hooks !== undefined && (!hooks || typeof hooks !== "object" || Array.isArray(hooks))) return null;
+  const foreign: Record<string, unknown> = { ...((hooks as Record<string, unknown> | undefined) ?? {}) };
+  if (agent === "cursor") {
+    for (const [event, semantic] of [["sessionStart", "session-start"], ["stop", "stop"]] as const)
+      if (Array.isArray(foreign[event])) foreign[event] = (foreign[event] as unknown[]).filter((hook) => !cursorHasOurs(hook, semantic));
+  } else {
+    for (const [event, semantic] of [["SessionStart", "session-start"], ["Stop", "stop"]] as const)
+      if (Array.isArray(foreign[event])) foreign[event] = withoutManagedGroupHooks(foreign[event] as unknown[], agent, semantic);
+  }
+  return canonicalJson({ ...json, hooks: foreign });
+}
+
 function cursorHasOurs(hook: unknown, event: "session-start" | "stop"): boolean {
   return typeof (hook as { command?: unknown })?.command === "string" &&
     isInstalledAgentHookCommand((hook as { command: string }).command, "cursor", event);
@@ -292,7 +340,38 @@ function assertRenderedSourcesUnchanged(
   }
 }
 
-function hookTargetPaths(agents: readonly AgentTool[]): string[] {
+/**
+ * Runner plus each selected client's project config, rendered from current
+ * bytes. Shared by install-hooks and upgrade's in-place refresh. Throws on a
+ * foreign runner or an unknown config shape; never writes.
+ */
+export function renderAgentHookTargets(
+  current: ReadonlyMap<string, string | null>,
+  agents: readonly AgentTool[],
+  linkedCodex: boolean,
+): Array<readonly [string, string]> {
+  assertRunnerReplaceable(current.get(SCRIPT_REL) ?? null, false);
+  const targets: Array<readonly [string, string]> = [[SCRIPT_REL, installedAgentHookRunnerScript()]];
+  if (agents.includes("claude"))
+    targets.push([".claude/settings.json", renderGroupStyle(current.get(".claude/settings.json") ?? null, ".claude/settings.json", "claude")]);
+  if (agents.includes("cursor")) targets.push([".cursor/hooks.json", renderCursor(current.get(".cursor/hooks.json") ?? null)]);
+  if (agents.includes("codex")) {
+    targets.push([".codex/config.toml", renderCodexConfig(current.get(".codex/config.toml") ?? null)]);
+    targets.push([
+      ".codex/hooks.json",
+      renderGroupStyle(current.get(".codex/hooks.json") ?? null, ".codex/hooks.json", "codex", !linkedCodex),
+    ]);
+  }
+  return targets;
+}
+
+/** The exact install-hooks call for these clients, including the linked-worktree Codex flag. */
+export function installHooksCommand(repo: string, agents: readonly AgentTool[], cli = repoHarnessInvocation(repo)): string {
+  const dispatcher = agents.includes("codex") && isLinkedGitWorktree(repo) ? " --allow-user-dispatcher" : "";
+  return `${cli} install-hooks --repo . --stop --agents ${agents.join(",")}${dispatcher}`;
+}
+
+export function hookTargetPaths(agents: readonly AgentTool[]): string[] {
   const targets = [SCRIPT_REL];
   if (agents.includes("claude")) targets.push(".claude/settings.json");
   if (agents.includes("cursor")) targets.push(".cursor/hooks.json");
@@ -322,7 +401,6 @@ export function installStopHooks(
   agents: AgentTool[],
   opts: StopHookInstallOptions = {},
 ): number {
-  const force = opts.force ?? false;
   const testHooks = opts.testHooks ?? {};
   if (!agents.length || agents.some((agent) => !ALL_AGENTS.includes(agent))) {
     err(`invalid --agents value; supported: ${ALL_AGENTS.join(",")}`);
@@ -364,20 +442,9 @@ export function installStopHooks(
     return 1;
   }
   const current = currentByPath(inspections);
-  const targets: Array<readonly [string, string]> = [];
+  let targets: Array<readonly [string, string]>;
   try {
-    assertRunnerReplaceable(current.get(SCRIPT_REL) ?? null, force);
-    targets.push([SCRIPT_REL, installedAgentHookRunnerScript()]);
-    if (agents.includes("claude"))
-      targets.push([".claude/settings.json", renderGroupStyle(current.get(".claude/settings.json") ?? null, ".claude/settings.json", "claude")]);
-    if (agents.includes("cursor")) targets.push([".cursor/hooks.json", renderCursor(current.get(".cursor/hooks.json") ?? null)]);
-    if (agents.includes("codex")) {
-      targets.push([".codex/config.toml", renderCodexConfig(current.get(".codex/config.toml") ?? null)]);
-      targets.push([
-        ".codex/hooks.json",
-        renderGroupStyle(current.get(".codex/hooks.json") ?? null, ".codex/hooks.json", "codex", !linkedCodex),
-      ]);
-    }
+    targets = renderAgentHookTargets(current, agents, linkedCodex);
   } catch (error) {
     err((error as Error).message + " — no Agent hook files changed");
     return 1;
@@ -444,9 +511,10 @@ export function installStopHooks(
   if (agents.includes("claude"))
     warn(
       "claude: whether Claude Code runs these hooks in the session that installed them depends on the client. If it does, " +
-        "that session has no SessionStart, so its next Stop already needs an accepted deliver for the whole worktree change: run " +
-        `\`${repoHarnessInvocation(repo)} deliver --repo .\` before ending this turn. If it does not, no lifecycle record appears ` +
-        "until a fresh session, which is where hookActive must be proven. Install hooks last during onboarding.",
+        `its next Stop needs an accepted deliver for the whole worktree change: run \`${repoHarnessInvocation(repo)} deliver --repo .\` ` +
+        "before ending this turn. A session whose SessionStart ran under the previous runner is rebound on that Stop when only " +
+        "Harness's own hook entries changed, so it can still prove hookActive; a session without SessionStart, or with third-party " +
+        "hook edits, proves it in a fresh session. Install hooks last during onboarding.",
     );
   return 0;
 }

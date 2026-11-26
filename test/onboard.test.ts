@@ -195,10 +195,22 @@ test("onboard covers the 0.8.0 rollout fixes", () => {
   assert.match(out, /从 `INDEX\.md` 读起/);
   assert.match(out, /JSON `preconditions`/);
   // Gate behavior without a deliverable session, and the post-upgrade hook refresh.
-  assert.match(out, /记为 lifecycle `loop-exit`。这两种放行都\*\*不是\*\*交付证据/);
-  assert.match(out, /按 upgrade 输出的命令重跑 `install-hooks`/);
+  assert.match(out, /记为 lifecycle `loop-exit`。这些放行都\*\*不是\*\*交付证据/);
+  // 0.8.1 superseded the post-upgrade install-hooks step; only the linked-worktree Codex dispatcher still needs it.
+  assert.match(out, /按输出的 `install-hooks \.\.\. --allow-user-dispatcher` 命令另跑/);
   // No-legacy inventory and narrow binds.
   assert.match(out, /`git log --all` 之外，再用 `git ls-remote` 对照远端分支/);
   assert.match(out, /\*\*只绑定文档真正描述的那几个文件\*\*/);
   assert.match(out, /`identity\.upstream` \/ `downstream` 会原样渲染成根 AGENTS\.md 的 “Dependencies” 一节/);
+});
+
+test("onboard covers the 0.8.1 upgrade-round fixes", () => {
+  const { out } = captureStdout(onboardCmd);
+  assert.match(out, /汉字和假名每个算半个词/);
+  assert.match(out, /\*\*免检，不挑选检查\*\*/);
+  assert.match(out, /退出码 2 表示“有可用升级”，不是失败/);
+  assert.match(out, /原位刷新已安装的项目级 hooks，保留第三方条目，不需要再跑 `install-hooks`/);
+  assert.match(out, /在\*\*同一会话\*\*里 deliver 并结束一轮即可/);
+  assert.match(out, /doctor 会按“文件:行”列出/);
+  assert.match(out, /`sync`（或下一次 `upgrade`）会自动删掉它们在 `\.agents\/\.harness-state\.json` 里的复核记录/);
 });

@@ -46,7 +46,8 @@ test("the repository impact map keeps platform-neutral upgrades in one focused m
   assert.deepEqual(module.owns, ["src/upgrade.ts", "src/commands/upgrade.ts", "src/harness-cli.ts"]);
   assert.deepEqual(module.tests, ["test/upgrade.test.ts"]);
   assert.ok(module.pitfalls?.some((pitfall) => /不能访问 registry、CI 或代码托管 API/.test(pitfall)));
-  assert.ok(module.pitfalls?.some((pitfall) => /当前 upgrade 不得安装、卸载或刷新 Hook/.test(pitfall)));
+  // 0.8.1: upgrade refreshes the project hooks Harness already manages, but never installs or removes them.
+  assert.ok(module.pitfalls?.some((pitfall) => /不新装、不卸载/.test(pitfall)));
 
   const managed = loadManifest(REPO).modules?.find((item) => item.name === "managed-generation");
   assert.ok(managed?.tests?.includes("test/cli.test.ts"));
@@ -100,6 +101,17 @@ test("the repository impact map records the 0.8.0 rollout decisions", () => {
   assert.ok(module("planner")?.pitfalls?.some((pitfall) => /HARNESS_COVERED_GLOBS/.test(pitfall)));
   assert.ok(module("render")?.pitfalls?.some((pitfall) => /词数预算只算仓库内容/.test(pitfall)));
   assert.ok(module("repository-upgrade")?.pitfalls?.some((pitfall) => /不创建首个 AGENTS\.md/.test(pitfall)));
+});
+
+test("the repository impact map records the 0.8.1 upgrade-round decisions", () => {
+  const manifest = loadManifest(REPO);
+  const module = (name: string) => manifest.modules?.find((item) => item.name === name);
+  assert.ok(module("render")?.pitfalls?.some((pitfall) => /汉字 \/ 假名每个算半个词/.test(pitfall)));
+  assert.ok(module("planner")?.pitfalls?.some((pitfall) => /capability 的 run 命令引用/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /外层 Stop 兜底也要带 stop_hook_active 守卫/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /rebind/.test(pitfall)));
+  assert.ok(module("repository-upgrade")?.pitfalls?.some((pitfall) => /原位刷新已由 Harness 管理的项目级 hook/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /retired review/.test(pitfall)));
 });
 
 test("SPEC states the exact declarative enforcement scan semantics", () => {

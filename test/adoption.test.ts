@@ -16,6 +16,7 @@ import {
 import { prepareAdoptionCmd } from "../src/commands/prepare-adoption";
 import { syncCmd } from "../src/commands/sync";
 import { loadManifest } from "../src/manifest";
+import { recordContextReviews } from "../src/state";
 import { inspectManagedFiles } from "../src/managed-files";
 import { renderTargets } from "../src/render";
 
@@ -1035,4 +1036,25 @@ test("prepare-adoption names the landing steps that would make the receipt stale
   assert.equal(result.preconditions.length, 2, result.preconditions.join("\n"));
   assert.match(result.preconditions[0], /contract http has no accepted baseline; run accept-contract before preparing/);
   assert.match(result.preconditions[1], /knowledge:agents:knowledge\/api\.md: .*record the review before preparing/);
+});
+
+test("sync drops review records of contexts the manifest no longer declares, and keeps the rest", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-adoption-retired-"));
+  mkdirSync(join(repo, ".agents/knowledge"), { recursive: true });
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repo, ".agents/knowledge/k.md"), "k\n");
+  const declare = (modules: string) =>
+    writeFileSync(
+      join(repo, ".agents/manifest.yaml"),
+      `spec: ai-harness/v0\nidentity: { name: retired, summary: retired reviews }\nknowledge:\n  - path: knowledge/k.md\n    authority: derived\n    binds: [src/a.ts]\nmodules:\n${modules}`,
+    );
+  declare("  - name: keep\n    role: r\n    entry: [src/a.ts]\n  - name: harness-checks\n    role: r\n    entry: [src/a.ts]\n");
+  syncCmd(repo, { createEntry: true });
+  const manifestNow = loadManifest(repo);
+  recordContextReviews(repo, manifestNow, { paths: ["knowledge/k.md"], modules: ["keep", "harness-checks"], reason: "checked" });
+  declare("  - name: keep\n    role: r\n    entry: [src/a.ts]\n");
+  syncCmd(repo);
+  const reviews = Object.keys(JSON.parse(readFileSync(join(repo, ".agents/.harness-state.json"), "utf8")).reviews).sort();
+  assert.deepEqual(reviews, ["knowledge:agents:knowledge/k.md", "module:keep"]);
 });

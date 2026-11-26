@@ -76,3 +76,15 @@ test("examples list every invariant by its manifest id", () => {
       assert.ok(agents.includes(`- \`${invariant.id}\`: ${invariant.rule} [`), `${name}: ${invariant.id}`);
   }
 });
+
+test("examples render a single dependency inline and several one per line", () => {
+  for (const name of ["cli-tool", "demo-run", "electron-app", "frontend-spa", "npm-lib"]) {
+    const repo = join(ROOT, "examples", name);
+    const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+    const identity = loadManifest(repo).identity;
+    for (const [label, items] of [["Upstream", identity.upstream ?? []], ["Downstream", identity.downstream ?? []]] as const) {
+      if (items.length === 1) assert.ok(agents.includes(`\n${label}: ${items[0]}\n`), `${name}: ${label} inline`);
+      else if (items.length > 1) assert.ok(agents.includes(`\n${label}:\n${items.map((item) => `- ${item}`).join("\n")}\n`), `${name}: ${label} list`);
+    }
+  }
+});

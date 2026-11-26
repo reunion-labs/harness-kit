@@ -1,7 +1,9 @@
+import { chmodSync } from "node:fs";
+import { join } from "node:path";
 import { type Document, parseDocument } from "yaml";
 import { assertManagedFileAdoption } from "./adoption";
 import { collectChanges } from "./git";
-import { HARNESS_LOCK_REL } from "./harness-cli";
+import { harnessInvocation, HARNESS_LOCK_REL } from "./harness-cli";
 import { MANIFEST_REL, type Manifest, validateManifest } from "./manifest";
 import {
   inspectManagedFiles,
@@ -10,6 +12,15 @@ import {
   type ManagedFileTarget,
 } from "./managed-files";
 import { renderTargets } from "./render";
+import { isLinkedGitWorktree } from "./codex-linked-hooks";
+import { inspectAgentHookStatus } from "./hook-status";
+import {
+  pruneRetiredReviews,
+  readState as readContextState,
+  renderState as renderContextState,
+  STATE_REL as CONTEXT_STATE_REL,
+} from "./state";
+import { hookTargetPaths, installHooksCommand, renderAgentHookTargets, type AgentTool } from "./commands/stop-hooks";
 
 export const UPGRADE_STATE_REL = HARNESS_LOCK_REL;
 export const UPGRADE_STATE_SCHEMA = "ai-harness/upgrade-state/v1";
@@ -30,7 +41,8 @@ export interface UpgradeVerification {
   verify?: { exitCode: number; report?: unknown; output?: string; error?: string };
 }
 
-export const UPGRADE_HOOKS_NOTE = "upgrade does not install, remove, or rewrite lifecycle hooks";
+export const UPGRADE_HOOKS_NOTE =
+  "upgrade refreshes the lifecycle hooks Harness already manages in this repository; it never installs new ones or touches user-level dispatchers";
 
 export interface UpgradeReport {
   schema: typeof UPGRADE_REPORT_SCHEMA;
@@ -43,10 +55,22 @@ export interface UpgradeReport {
   appliedMigrations: string[];
   changedFiles: string[];
   dirtyFiles: string[];
-  hooksChanged: false;
+  /** The managed project hook runner / client configs were (or, with --check, would be) rewritten. */
+  hooksChanged: boolean;
+  /** Installed lifecycle hooks and what upgrade does about them (absent when none are installed). */
+  hooks?: UpgradeHookRefresh;
   errors: string[];
   notes: string[];
   verification?: UpgradeVerification;
+}
+
+export interface UpgradeHookRefresh {
+  agents: string[];
+  /** refreshed: part of this transaction (or would be, under --check); current: nothing to change; manual: needs install-hooks. */
+  status: "refreshed" | "current" | "manual";
+  /** The exact install-hooks call, when status is manual. */
+  command?: string;
+  reason?: string;
 }
 
 export interface UpgradeOptions {
@@ -200,6 +224,35 @@ function asManifest(document: Document.Parsed, report: UpgradeReport): Manifest 
   return manifest;
 }
 
+/**
+ * Project hooks Harness already manages are repository files, so they join the
+ * same transaction as the generated entries. The linked-worktree Codex
+ * dispatcher binds the runner hash in the user directory and Git admin dir, so
+ * that case still goes through install-hooks.
+ */
+function planHookRefresh(repo: string, targetVersion: string): { targets: ManagedFileTarget[]; hooks?: UpgradeHookRefresh } {
+  let agents: AgentTool[];
+  try {
+    agents = inspectAgentHookStatus(repo).configuredAgents;
+  } catch {
+    return { targets: [] };
+  }
+  if (!agents.length) return { targets: [] };
+  if (agents.includes("codex") && isLinkedGitWorktree(repo))
+    return {
+      targets: [],
+      hooks: {
+        agents,
+        status: "manual",
+        command: installHooksCommand(repo, agents, harnessInvocation(targetVersion)),
+        reason: "the linked-worktree Codex dispatcher lives outside the repository",
+      },
+    };
+  const inspections = inspectManagedFiles(repo, hookTargetPaths(agents).map((rel) => [rel, ""] as const));
+  const current = new Map(inspections.map((inspection) => [inspection.relativePath, inspection.currentContent]));
+  return { targets: renderAgentHookTargets(current, agents, false).map(([path, content]) => [path, content] as const), hooks: { agents, status: "refreshed" } };
+}
+
 function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
   const report = reportBase(options);
   const targetSemver = parseSemver(options.targetVersion);
@@ -268,13 +321,26 @@ function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
     : rendered;
   if (entryMissing[0])
     report.notes.push("AGENTS.md does not exist yet, so upgrade did not create it; onboarding creates the first entry with sync");
+  let hookPlan: ReturnType<typeof planHookRefresh>;
+  try {
+    hookPlan = planHookRefresh(repo, options.targetVersion);
+  } catch (error) {
+    return fail(report, `cannot refresh lifecycle hooks: ${(error as Error).message}`);
+  }
+  if (hookPlan.hooks) report.hooks = hookPlan.hooks;
+  // Review records of contexts the manifest no longer declares go in the same transaction.
+  const contextState = readContextState(repo);
+  const pruned = contextState ? pruneRetiredReviews(repo, finalManifest, contextState) : null;
   const targets: ManagedFileTarget[] = [
     // Keep an unchanged manifest in the transaction preflight so generated
     // files can never be committed from bytes that changed after planning.
     [MANIFEST_REL, finalManifestContent],
     ...generated,
+    ...hookPlan.targets,
+    ...(pruned?.retired.length ? [[CONTEXT_STATE_REL, renderContextState(pruned.state)] as ManagedFileTarget] : []),
     [UPGRADE_STATE_REL, renderState(nextState)],
   ];
+  const hookPaths = new Set(hookPlan.targets.map(([path]) => path));
   const preflight = inspectManagedFiles(repo, targets);
   const generatedPaths = new Set(generated.map(([path]) => path));
   try {
@@ -289,11 +355,18 @@ function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
   report.changedFiles = preflight
     .filter((inspection) => !inspection.satisfiesDesired)
     .map((inspection) => inspection.relativePath);
+  report.hooksChanged = report.changedFiles.some((path) => hookPaths.has(path));
+  if (report.hooks?.status === "refreshed" && !report.hooksChanged) report.hooks.status = "current";
   const stateMatchesManifest = state?.manifestSpec === finalManifest.spec;
   const stateMatchesVersion = state?.version === options.targetVersion;
   const stateMatchesMigrations = state?.appliedMigrations.join("\0") === nextState.appliedMigrations.join("\0");
+  // Dropping retired review records rides along with a real upgrade; on its
+  // own it is sync's job and never makes --check report "upgrade available".
   const needsUpgrade =
-    report.changedFiles.length > 0 || !stateMatchesManifest || !stateMatchesVersion || !stateMatchesMigrations;
+    report.changedFiles.some((path) => path !== CONTEXT_STATE_REL) || !stateMatchesManifest || !stateMatchesVersion || !stateMatchesMigrations;
+  if (!needsUpgrade) report.changedFiles = report.changedFiles.filter((path) => path !== CONTEXT_STATE_REL);
+  const retiredNote = (verb: string) => `${verb} retired context review record(s) in ${CONTEXT_STATE_REL}: ${pruned!.retired.join(", ")}`;
+  if (options.check && needsUpgrade && pruned?.retired.length) report.notes.push(retiredNote("will drop"));
 
   if (options.check) {
     report.status = needsUpgrade ? "upgrade-available" : "current";
@@ -320,8 +393,11 @@ function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
       );
     },
   });
+  // A runner written fresh (configs present, runner missing) must be executable.
+  if (result.written.includes(".agents/hooks/harness-agent-hook.sh")) chmodSync(join(repo, ".agents/hooks/harness-agent-hook.sh"), 0o755);
   report.status = "upgraded";
   report.changedFiles = result.written;
+  if (result.written.includes(CONTEXT_STATE_REL)) report.notes.push(retiredNote("dropped"));
   report.appliedMigrations = nextState.appliedMigrations;
   return report;
 }

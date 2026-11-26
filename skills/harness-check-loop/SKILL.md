@@ -57,7 +57,7 @@ harness-kit deliver --repo .
 - **Stop Hook 默认 thin**：没有匹配 stamp 就 block，并提示跑 `deliver`（不要求新开会话）。每次 Stop 都记进该会话的 lifecycle 证据；放行时绑定它接受的 deliver 戳，所以 `evidence --json` 的 `hookActive` / `lifecycle` 能证明门禁真的执行过
 - `HARNESS_KIT_STOP_MODE=execute` 时 Stop 内直接重跑验收（兼容旧行为）
 - **没装 Hook 也能闭环**：靠 AGENTS 协议 + deliver；Git/CI 再兜底
-- 不要把 `hookActive` 当成交付成功标准：交付看 deliver 的 `accepted`，`hookActive` 只说明 Hook 门禁在这个会话里生效过。`evidence` 顶层的 `agent: manual` 只说明最近一条记录来自手动 deliver，Hook 是否生效看 `hookActive` 和 `hookActiveSource`
+- 不要把 `hookActive` 当成交付成功标准：交付看 deliver 的 `accepted`，`hookActive` 只说明 Hook 门禁在这个会话里生效过。`evidence` 顶层的 `agent: manual` 只说明最近一条记录来自手动 deliver；`record.deliveredIn` 写明它是在哪个 Agent 会话里跑的（按该会话的 task 记录），`record.createdAt` 是这次证据的写入时间。Hook 是否生效看 `hookActive` 和 `hookActiveSource`
 - Stop 拦截文案里的 `deliver --repo <绝对路径>` 指向被门禁的 target，照抄即可；不要改成 `--repo .`，在嵌套 target 目录里那会验收错 target
 - 被拦截后先 deliver。确实交付不了（工具受限、CLI 拿不到）时，改动没变的情况下再结束一次会被放行，记为 `loop-exit`；这**不是**交付成功，回复里要写明“改动未验证”及原因
 

@@ -40,7 +40,7 @@ export interface PlanNote {
 
 export interface SelectedCheck {
   id: string; // capability verb
-  reason: string; // why it was selected (module:<name> | profile:<id> | always | no_match)
+  reason: string; // why it was selected (module:<name> | profile:<id> | gate:<id> | script:<path> | always | no_match)
 }
 
 export interface Plan {
@@ -96,6 +96,22 @@ export const HARNESS_COVERED_GLOBS = [
   ".codex/config.toml",
 ] as const;
 const harnessCovered = picomatch([...HARNESS_COVERED_GLOBS], { dot: true });
+
+function normalizeScriptPath(token: string): string {
+  return token.replace(/^['"]|['"]$/g, "").replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/**
+ * Repository paths a capability's command names (`bash .agents/checks/go-test.sh`,
+ * `go run ./.agents/checks/snapshot`). A change to such a file changes what the
+ * capability checks, so it must run even when no module owns the file.
+ */
+function capabilityScriptPaths(run: string): string[] {
+  return run
+    .split(/[\s;&|()<>]+/)
+    .map(normalizeScriptPath)
+    .filter((token) => token.includes("/") && !token.startsWith("-") && !token.includes("$") && !token.startsWith("/") && !token.includes(".."));
+}
 
 /** True if any glob in `globs` matches `file`. Empty globs never match. */
 function matchesAny(file: string, globs: string[] | undefined): boolean {
@@ -213,6 +229,16 @@ export function planChecks(m: Manifest, input: Array<string | PlannedChange>, op
   // checks, but can never bypass a gate attached to an affected module/test.
   for (const item of affectedGates) for (const check of item.gate.checks ?? []) add(check, `gate:${item.id}`);
   for (const c of m.validation?.defaults?.always ?? []) add(c, "always");
+  // A changed script or program that a runnable capability executes selects
+  // that capability (mutating/background ones never run automatically).
+  if (!profile) {
+    for (const [verb, capability] of Object.entries(m.capabilities ?? {})) {
+      if (capability.mutating || capability.background || typeof capability.run !== "string") continue;
+      const scripts = capabilityScriptPaths(capability.run);
+      const hit = changed.find((file) => scripts.some((script) => file === script || file.startsWith(`${script}/`)));
+      if (hit) add(verb, `script:${hit}`);
+    }
+  }
 
   // ── gaps ────────────────────────────────────────────────────────────────
   if (modulesWithOwns.length === 0) {
@@ -300,7 +326,10 @@ export function planChecks(m: Manifest, input: Array<string | PlannedChange>, op
     });
   }
 
-  if (changed.length > 0 && checks.length === 0 && !gaps.some((gap) => gap.kind === "unknown-profile")) {
+  // verify (which deliver always runs) judges Harness paths, so a change made
+  // only of them is not "no checks".
+  const onlyHarnessPaths = changed.length > 0 && changed.every((file) => harnessCovered(file));
+  if (changed.length > 0 && checks.length === 0 && !onlyHarnessPaths && !gaps.some((gap) => gap.kind === "unknown-profile")) {
     gaps.push({
       kind: "no-checks-selected",
       where: "validation",

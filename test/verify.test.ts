@@ -423,3 +423,21 @@ contracts:
   });
   assert.equal(outer.status, 0);
 });
+
+test("verify reports outdated manual evidence before its NEXT ACTIONS, as information", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-verify-stale-manual-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  write(repo, "src/core.ts", "export const value = 1;\n");
+  write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: stale, summary: stale manual evidence }\nvalidation:\n  defaults:\n    no_match: [noop]\ncapabilities:\n  noop: { run: 'true' }\n");
+  syncCmd(repo, { createEntry: true });
+  gitCommit(repo, "initial");
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  assert.equal(spawnSync(TSX, [CLI, "run-checks", "--repo", repo, "--base", "HEAD"], { encoding: "utf8" }).status, 0);
+  write(repo, "src/core.ts", "export const value = 3;\n");
+  const result = runVerifyText(repo);
+  assert.equal(result.status, 0, result.stdout);
+  const info = result.stdout.indexOf("saved delivery evidence covers an earlier change; deliver refreshes it");
+  assert.ok(info > 0, result.stdout);
+  assert.ok(info < result.stdout.indexOf("NEXT ACTIONS"), "stated before NEXT ACTIONS, not after the verdict");
+  assert.doesNotMatch(result.stdout, /WARN manual run-checks evidence no longer matches/);
+});

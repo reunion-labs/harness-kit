@@ -51,6 +51,11 @@ export interface ValidationEvidence {
   runChecksStatus?: ValidationStatus;
   /** Lifecycle sessions only: the hook's own run-checks + verify, or the deliver stamp a thin Stop accepted. */
   source?: "run-checks" | "deliver-stamp";
+  /**
+   * Manual records only: the Agent session whose task record scoped this run
+   * (a deliver the Agent ran from its own shell). Attribution, not hook proof.
+   */
+  deliveredIn?: { agent: string; hostSessionId: string };
   createdAt: string;
 }
 
@@ -67,6 +72,8 @@ export interface StopObservation {
    */
   reason: "clean" | "stamp" | "checks" | "no-stamp" | "scope-error" | "loop-exit";
   fingerprint?: string;
+  /** This Stop rebound the session to a refreshed Harness hook configuration (see rebindValidationSessionHooks). */
+  rebound?: boolean;
 }
 
 export interface ValidationSession {
@@ -80,6 +87,8 @@ export interface ValidationSession {
   initialDirty: string[];
   /** Exact project-local runner and client config that produced this lifecycle session. */
   hookConfigFingerprint?: string;
+  /** The same client config with Harness's own hook entries removed (absent before 0.8.1). */
+  hookForeignFingerprint?: string;
   waivers: StoredWaiver[];
   lastEvidence?: ValidationEvidence;
   /** Latest Stop observed for this lifecycle session (thin or execute). */
@@ -190,12 +199,19 @@ export function startValidationSession(args: {
   initialFingerprint: string;
   initialDirty: string[];
   hookConfigFingerprint?: string;
+  hookForeignFingerprint?: string;
 }): ValidationSession {
   const repo = gitRoot(args.repo);
   const token = validationSessionToken(args.agent, args.sessionId);
   const existing = readValidationSession(repo, token);
   if (existing) {
-    const resumed = { ...existing, hookConfigFingerprint: args.hookConfigFingerprint, lastEvidence: undefined, lastStop: undefined };
+    const resumed = {
+      ...existing,
+      hookConfigFingerprint: args.hookConfigFingerprint,
+      hookForeignFingerprint: args.hookForeignFingerprint,
+      lastEvidence: undefined,
+      lastStop: undefined,
+    };
     writeValidationSession(repo, resumed);
     pruneValidationState(repo);
     return resumed;
@@ -211,6 +227,7 @@ export function startValidationSession(args: {
     initialFingerprint: args.initialFingerprint,
     initialDirty: args.initialDirty,
     ...(args.hookConfigFingerprint ? { hookConfigFingerprint: args.hookConfigFingerprint } : {}),
+    ...(args.hookForeignFingerprint ? { hookForeignFingerprint: args.hookForeignFingerprint } : {}),
     waivers: [],
     createdAt: now,
     updatedAt: now,
@@ -367,6 +384,24 @@ export function clearStopGuard(repo: string, token: string): void {
   } catch {
     // Nothing was blocked for this session.
   }
+}
+
+/**
+ * Move a lifecycle session onto a refreshed Harness hook configuration (an
+ * upgrade or install-hooks during the session). The caller proves the Stop ran
+ * through the refreshed runner and that nothing but Harness's own entries changed.
+ */
+export function rebindValidationSessionHooks(repoInput: string, token: string, hookConfigFingerprint: string, hookForeignFingerprint: string): boolean {
+  const repo = gitRoot(repoInput);
+  const session = readValidationSession(repo, token);
+  if (!session || session.agent === "manual") return false;
+  writePrivateJson(sessionPath(repo, token), {
+    ...session,
+    hookConfigFingerprint,
+    hookForeignFingerprint,
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
 }
 
 export interface ValidationEvidenceFreshness {

@@ -4,6 +4,7 @@ import { HARNESS_LOCK_REL, lockedHarnessVersion } from "../harness-cli";
 import { loadManifest, validateManifest } from "../manifest";
 import { writeManagedFiles } from "../managed-files";
 import { renderTargets } from "../render";
+import { pruneRetiredReviews, readState, STATE_REL, writeState } from "../state";
 import { info, ok, warn } from "../util";
 
 export interface SyncOpts {
@@ -57,5 +58,13 @@ export function syncCmd(repo: string, opts: SyncOpts = {}): void {
     else if (written.has(rel)) ok(`wrote ${rel}`);
     else ok(`${rel} already current`);
   }
-  info("Context review evidence was not changed; use `record-context-review` only after an Agent reviews the context.");
+  // Records of contexts the manifest no longer declares (a deleted module) can
+  // never be stale or current again; dropping them advances no review.
+  const state = readState(repo);
+  const pruned = state ? pruneRetiredReviews(repo, m, state) : null;
+  if (pruned?.retired.length) {
+    writeState(repo, pruned.state);
+    ok(`dropped retired context review record(s) from ${STATE_REL}: ${pruned.retired.join(", ")}`);
+  }
+  info("Context reviews of declared contexts were not changed; use `record-context-review` only after an Agent reviews the context.");
 }

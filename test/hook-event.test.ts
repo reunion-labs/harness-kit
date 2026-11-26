@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { installHooksCmd } from "../src/commands/install-hooks";
 import { syncCmd } from "../src/commands/sync";
 import { inspectAgentHookStatus } from "../src/hook-status";
-import { manualValidationSession, recordValidationEvidence } from "../src/validation-state";
+import { manualValidationSession, recordValidationEvidence, startValidationSession } from "../src/validation-state";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
@@ -531,4 +531,77 @@ test("the loop exit also covers a Stop without SessionStart and Cursor's loop_co
   assert.equal(codexExit.status, 0);
   assert.equal(codexExit.stdout.trim(), "");
   assert.match(codexExit.stderr, /WITHOUT verified delivery/);
+});
+
+test("a session that started under the previous runner is rebound when only Harness's own hook entries changed", () => {
+  const repo = fixture();
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  commit(repo, "install lifecycle hooks");
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+  // What a 0.8.0 SessionStart left behind: another runner's fingerprint, no foreign-config fingerprint.
+  const before = { session_id: "upgraded-mid-session" };
+  startValidationSession({ repo, agent: "claude", sessionId: before.session_id, baseSha: head, initialFingerprint: "x", initialDirty: [], hookConfigFingerprint: "f".repeat(64) });
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  assert.equal(hook(repo, "claude", "stop", before).stdout.trim(), "");
+  let body = evidenceJson(repo);
+  assert.equal(body.lifecycle.configurationCurrent, true);
+  assert.equal(body.lifecycle.stop.rebound, true);
+  assert.equal(body.hookActive, true, JSON.stringify(body.lifecycle));
+  assert.match(spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout, /rebound to the hook configuration refreshed during the session/);
+
+  // A third-party hook edit is not a Harness refresh: that session must prove it afresh.
+  const other = { session_id: "third-party-edit" };
+  startValidationSession({ repo, agent: "claude", sessionId: other.session_id, baseSha: head, initialFingerprint: "x", initialDirty: [], hookConfigFingerprint: "e".repeat(64) });
+  const settingsPath = join(repo, ".claude", "settings.json");
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  settings.hooks.Stop.unshift({ hooks: [{ type: "command", command: "echo third-party" }] });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  assert.equal(hook(repo, "claude", "stop", other).stdout.trim(), "");
+  body = evidenceJson(repo);
+  assert.equal(body.lifecycle.hostSessionId, "third-party-edit");
+  assert.equal(body.lifecycle.configurationCurrent, false);
+  assert.equal(body.lifecycle.stop.rebound, undefined);
+  assert.equal(body.hookActive, false);
+});
+
+test("a 0.8.1 session records its foreign hook config and is rebound after an in-session refresh", () => {
+  const repo = fixture();
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  const settingsPath = join(repo, ".claude", "settings.json");
+  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  // Start from the older, unconditional Stop fallback (still a managed entry).
+  settings.hooks.Stop[0].hooks[0].command = settings.hooks.Stop[0].hooks[0].command.replace(/ \|\| grep -Eq '[^']*'/, "");
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  commit(repo, "older managed fallback");
+  const payload = { session_id: "refresh-in-session" };
+  assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+  // Reinstall during the session (what upgrade's refresh does): only managed bytes change.
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  assert.equal(hook(repo, "claude", "stop", payload).stdout.trim(), "");
+  const body = evidenceJson(repo);
+  assert.equal(body.lifecycle.stop.rebound, true);
+  assert.equal(body.hookActive, true);
+});
+
+test("a deliver the Agent ran from its own shell names the session whose task record scoped it", () => {
+  const repo = fixture();
+  const payload = { session_id: "shell-deliver" };
+  assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  const body = evidenceJson(repo);
+  assert.equal(body.record.kind, "manual-deliver");
+  assert.deepEqual(body.record.deliveredIn, { agent: "claude", hostSessionId: "shell-deliver" });
+  // record.createdAt is this evidence, not the first manual record of the worktree.
+  assert.equal(body.record.createdAt, body.evidence.createdAt);
+  assert.equal(body.record.sessionCreatedAt, body.createdAt);
+  const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
+  assert.match(text, /stamp source: deliver\/manual, run inside claude session shell-deliver \(its task record\)/);
 });

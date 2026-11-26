@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import { coveringStampEvidence, resolveChangeScope, startTaskRecord } from "../delivery";
 import { collectChanges, EMPTY_TREE_BASE, gitRoot } from "../git";
 import { repoHarnessInvocation } from "../harness-cli";
-import { agentHookConfigurationFingerprint } from "../hook-status";
+import { agentHookConfigurationFingerprint, foreignHookConfigurationFingerprint } from "../hook-status";
 import {
   clearStopGuard,
   clearValidationEvidence,
   markLatestVerifyResult,
   readStopGuard,
   readValidationSession,
+  rebindValidationSessionHooks,
   recordStopObservation,
   startValidationSession,
   validationSessionToken,
@@ -180,6 +181,37 @@ interface StopContext {
   cli: string;
   /** The client re-runs Stop because the previous one blocked (stop_hook_active / loop_count). */
   continuing: boolean;
+  /** This Stop moved the session onto a refreshed Harness hook configuration. */
+  rebound: boolean;
+}
+
+/**
+ * An upgrade or install-hooks during a session replaces the runner (and maybe
+ * Harness's own config entries) after SessionStart bound the old ones. This
+ * Stop runs the CLI the current runner pins, and agentHookConfigurationFingerprint
+ * only exists when that runner is this exact version's managed script, so the
+ * new configuration is demonstrably executing. If everything else in the
+ * client config is unchanged since SessionStart (from the session, or for
+ * sessions started before 0.8.1 from the session base commit), the session is
+ * rebound and can still prove hookActive. Any third-party hook edit, a linked
+ * Codex dispatcher, or unreadable config keeps the old rule: prove it in a
+ * fresh session.
+ */
+function rebindRefreshedHooks(ctx: StopContext): boolean {
+  try {
+    const session = readValidationSession(ctx.repo, ctx.token);
+    if (!session?.hookConfigFingerprint) return false;
+    const current = agentHookConfigurationFingerprint(ctx.repo, ctx.agent);
+    if (!current || current === session.hookConfigFingerprint) return false;
+    const foreignNow = foreignHookConfigurationFingerprint(ctx.repo, ctx.agent);
+    const foreignThen =
+      session.hookForeignFingerprint ??
+      (session.baseSha ? foreignHookConfigurationFingerprint(ctx.repo, ctx.agent, session.baseSha) : null);
+    if (!foreignNow || foreignNow !== foreignThen) return false;
+    return rebindValidationSessionHooks(ctx.repo, ctx.token, current, foreignNow);
+  } catch {
+    return false;
+  }
 }
 
 function continuingStop(payload: HookPayload): boolean {
@@ -215,7 +247,7 @@ function blockStop(ctx: StopContext, mode: StopObservation["mode"], fingerprint:
   }
   if (ctx.continuing && previous === fingerprint) {
     clearStopGuard(ctx.repo, ctx.token);
-    observeStop(ctx.repo, ctx.token, { mode, decision: "allow", reason: "loop-exit", fingerprint }, null);
+    observe(ctx, { mode, decision: "allow", reason: "loop-exit", fingerprint }, null);
     return allowUnverified(
       ctx.agent,
       "harness-kit: Stop allowed WITHOUT verified delivery: nothing changed since the previous block. " +
@@ -238,28 +270,32 @@ function scopeFingerprint(repo: string, base?: string | null): string {
   }
 }
 
+function observe(ctx: StopContext, observation: Omit<StopObservation, "at">, evidence?: ValidationEvidence | null): void {
+  observeStop(ctx.repo, ctx.token, ctx.rebound ? { ...observation, rebound: true } : observation, evidence);
+}
+
 function thinStop(ctx: StopContext): number {
   const { repo, token, cli } = ctx;
   let scope;
   try {
     scope = resolveChangeScope(repo);
   } catch (error) {
-    observeStop(repo, token, { mode: "thin", decision: "block", reason: "scope-error" }, null);
+    observe(ctx, { mode: "thin", decision: "block", reason: "scope-error" }, null);
     return blockStop(ctx, "thin", "(scope-error)", deliverBlockMessage(cli, repo, `cannot resolve changes: ${(error as Error).message}`));
   }
   const fingerprint = scope.changes.fingerprint;
   if (scope.changes.files.length === 0) {
-    observeStop(repo, token, { mode: "thin", decision: "allow", reason: "clean", fingerprint }, null);
+    observe(ctx, { mode: "thin", decision: "allow", reason: "clean", fingerprint }, null);
     return allowStop(ctx);
   }
   // The accepted deliver stamp this Stop relied on becomes the session's gate
   // evidence, so the default thin mode can prove the gate (hookActive / ACTIVE).
   const stamp = coveringStampEvidence(repo, scope);
   if (stamp) {
-    observeStop(repo, token, { mode: "thin", decision: "allow", reason: "stamp", fingerprint }, { ...stamp, source: "deliver-stamp" });
+    observe(ctx, { mode: "thin", decision: "allow", reason: "stamp", fingerprint }, { ...stamp, source: "deliver-stamp" });
     return allowStop(ctx);
   }
-  observeStop(repo, token, { mode: "thin", decision: "block", reason: "no-stamp", fingerprint }, null);
+  observe(ctx, { mode: "thin", decision: "block", reason: "no-stamp", fingerprint }, null);
   return blockStop(
     ctx,
     "thin",
@@ -350,7 +386,7 @@ function executeStop(ctx: StopContext): number {
   }
   const passed = run.code === 0 && !!report?.ok && verifyPassed && evidencePersisted;
   const fingerprint = report?.fingerprint ?? scopeFingerprint(repo, session.baseSha ?? EMPTY_TREE_BASE);
-  observeStop(repo, token, {
+  observe(ctx, {
     mode: "execute",
     decision: passed ? "allow" : "block",
     reason: "checks",
@@ -395,6 +431,7 @@ export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {
         initialFingerprint: initial.fingerprint,
         initialDirty: initial.files,
         hookConfigFingerprint: agentHookConfigurationFingerprint(repo, opts.agent) ?? undefined,
+        hookForeignFingerprint: foreignHookConfigurationFingerprint(repo, opts.agent) ?? undefined,
       });
       // Optimize: auto task base so deliver can cover commits after session start.
       if (initial.head) {
@@ -424,7 +461,9 @@ export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {
     token: validationSessionToken(opts.agent, id),
     cli: repoHarnessInvocation(repo),
     continuing: continuingStop(payload),
+    rebound: false,
   };
+  ctx.rebound = rebindRefreshedHooks(ctx);
   if (stopMode() === "thin") return thinStop(ctx);
   return executeStop(ctx);
 }
