@@ -50,7 +50,7 @@ invariants:
       allow_empty: true
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /knowledge: engineering\/handbook\/api\.md/);
@@ -74,7 +74,7 @@ invariants:
   - { id: missing-gate, rule: "enforce policy" }
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const compact = capture(() => doctorCmd(repo));
   assert.equal(compact.code, 0, compact.output);
@@ -105,7 +105,7 @@ knowledge:
     binds: [src/api.ts]
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const before = capture(() => doctorCmd(repo));
   assert.equal(before.code, 1);
   assert.match(before.output, /尚未记录复核/);
@@ -127,7 +127,7 @@ routing:
   - { when: missing, read: ['nowhere/**/*.ts'] }
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 1);
   assert.match(result.output, /routing.*glob.*0 paths/);
@@ -137,7 +137,7 @@ test("doctor treats only the semantic CLAUDE.md -> AGENTS.md alias as in sync", 
   const repo = mkdtempSync(join(tmpdir(), "hk-doctor-alias-"));
   write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: alias, summary: alias fixture }\n");
   symlinkSync("AGENTS.md", join(repo, "CLAUDE.md"));
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 0, result.output);
@@ -169,7 +169,7 @@ validation:
         test_touch: required
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const missing = capture(() => doctorCmd(repo));
   assert.equal(missing.code, 1);
@@ -208,7 +208,7 @@ validation:
         test_touch: required
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 1);
@@ -243,7 +243,7 @@ validation:
         test_touch: required
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 1);
@@ -272,7 +272,7 @@ validation:
       checks: [e2e]
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 1);
@@ -306,7 +306,7 @@ validation:
         test_touch: required
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 1);
@@ -335,7 +335,7 @@ modules:
     owns: ["src/ghost/**"]
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const result = capture(() => doctorCmd(repo));
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /WARN module api: owns glob "src\/legacy\/\*\*" matches 0 files — changes under it can never select this module/);
@@ -346,4 +346,14 @@ modules:
   // A module with no live owns at all keeps the stronger whole-module warning.
   assert.match(result.output, /WARN module ghost: owns glob matches 0 files — impact planner can never select it/);
   assert.doesNotMatch(result.output, /module ghost: owns glob "src\/ghost/);
+});
+
+test("doctor's AGENTS.md budget counts repository content and says the fixed text is excluded", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-doctor-budget-"));
+  const rules = Array.from({ length: 60 }, (_, index) => `  - id: rule-${index}\n    rule: 规则 ${index}：每条 rule 都有 several English words to pad the text\n    manual: true`);
+  write(repo, ".agents/manifest.yaml", `spec: ai-harness/v0\nidentity: { name: budget, summary: budget fixture }\ninvariants:\n${rules.join("\n")}\n`);
+  syncCmd(repo, { createEntry: true });
+  const result = capture(() => doctorCmd(repo));
+  assert.match(result.output, /AGENTS\.md \d+ lines \/ \d+ words; repository content \d+ words \(budget 150 lines \/ 500 content words; fixed Harness text not counted\)/);
+  assert.match(result.output, /WARN .*repository content \d+ words.*Move detail into \.agents\/knowledge\//);
 });

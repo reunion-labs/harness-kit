@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { collectChanges, GitDiffError, listWorktreeFiles, readFileAtCommit } from "../src/git";
+import { collectChanges, GitDiffError, isAncestorCommit, listWorktreeFiles, readFileAtCommit } from "../src/git";
 
 function repoWithCommit(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "hk-git-"));
@@ -154,4 +154,17 @@ test("listWorktreeFiles finds tracked and untracked matches below a directory on
     "packages/new/.agents/manifest.yaml",
   ]);
   assert.deepEqual(listWorktreeFiles(join(repo, "packages/lib"), "**/.agents/manifest.yaml"), []);
+});
+
+test("isAncestorCommit separates ancestry from Git failures", () => {
+  const repo = repoWithCommit({ "a.txt": "1\n" });
+  const first = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+  writeFileSync(join(repo, "a.txt"), "2\n");
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qam", "second"], { cwd: repo });
+  assert.equal(isAncestorCommit(repo, first, "HEAD"), true);
+  assert.equal(isAncestorCommit(repo, "HEAD", first), false);
+  execFileSync("git", ["checkout", "-q", "--orphan", "unrelated"], { cwd: repo });
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "root"], { cwd: repo });
+  assert.equal(isAncestorCommit(repo, first, "HEAD"), false);
+  assert.throws(() => isAncestorCommit(repo, "no-such-ref", "HEAD"), GitDiffError);
 });

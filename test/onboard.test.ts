@@ -168,8 +168,9 @@ test("onboard covers unresolved mentions, no-legacy adoption, hot-loaded hooks, 
   assert.match(out, /链接和 `@path` 解析不到会 fail closed/);
   assert.match(out, /`candidate\.json` 的 `unresolved` 列出找不到仓内文件的纯路径提及/);
   assert.match(out, /逐条判定 `unresolved`/);
-  // H21: a repository without legacy entries never runs a plain sync before the audit.
-  assert.match(out, /仓库\*\*没有\*\* legacy 入口时不要运行普通 `sync`/);
+  // H21 / H37: plain sync never writes the first entry; existing repositories never skip the audit.
+  assert.match(out, /普通 `harness-kit sync --repo \.` \*\*不会创建首个 `AGENTS\.md`\*\*/);
+  assert.match(out, /接入已有仓库\*\*绝不用 `sync --create-entry`\*\*/);
   // H19: the session gate is installed last and delivered immediately.
   assert.match(out, /会话门禁是接入的\*\*最后一个改动\*\*/);
   assert.match(out, /绝不在等待异步盲审时安装/);
@@ -183,4 +184,21 @@ test("onboard covers unresolved mentions, no-legacy adoption, hot-loaded hooks, 
   assert.match(out, /`\.agents\/\.harness-state\.json`，必须和其他接入文件一起提交/);
   // H23: incremental-only rules use the injected task diff.
   assert.match(out, /`HARNESS_KIT_BASE`.*`HARNESS_KIT_CHANGED_FILES`/);
+});
+
+test("onboard covers the 0.8.0 rollout fixes", () => {
+  const { out } = captureStdout(onboardCmd);
+  // Other clients' rules are inventoried and bundled.
+  assert.match(out, /`\.cursor\/rules\/\*\*`（含 `alwaysApply` 的 `\.mdc`）/);
+  // Landing steps happen before prepare, and the auditor starts from INDEX.md.
+  assert.match(out, /在这一步就运行 `harness-kit accept-contract --repo \.`/);
+  assert.match(out, /从 `INDEX\.md` 读起/);
+  assert.match(out, /JSON `preconditions`/);
+  // Gate behavior without a deliverable session, and the post-upgrade hook refresh.
+  assert.match(out, /记为 lifecycle `loop-exit`。这两种放行都\*\*不是\*\*交付证据/);
+  assert.match(out, /按 upgrade 输出的命令重跑 `install-hooks`/);
+  // No-legacy inventory and narrow binds.
+  assert.match(out, /`git log --all` 之外，再用 `git ls-remote` 对照远端分支/);
+  assert.match(out, /\*\*只绑定文档真正描述的那几个文件\*\*/);
+  assert.match(out, /`identity\.upstream` \/ `downstream` 会原样渲染成根 AGENTS\.md 的 “Dependencies” 一节/);
 });

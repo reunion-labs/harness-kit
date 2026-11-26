@@ -66,7 +66,8 @@ test("run-checks passes when prod + tests changed and the check succeeds", () =>
   const { code, json } = runJson(repo);
   assert.equal(code, 0);
   assert.equal(json.ok, true);
-  assert.equal(json.status, "verified-with-advisories");
+  // .agents/manifest.yaml is Harness-covered (verify judges it), so no unmapped-file advisory.
+  assert.equal(json.status, "verified");
   assert.ok(json.passed.includes("test"));
 });
 

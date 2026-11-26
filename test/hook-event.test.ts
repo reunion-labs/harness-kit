@@ -62,7 +62,7 @@ function fixture(manifest = MANIFEST): string {
   write(repo, ".agents/manifest.yaml", manifest);
   write(repo, "src/core.ts", "export const value = 1;\n");
   write(repo, "test/core.test.ts", "// initial coverage\n");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   commit(repo, "initial");
   return repo;
 }
@@ -197,6 +197,14 @@ test("default thin Stop leaves lifecycle proof: SessionStart, each Stop, and the
   // The latest record is the manual deliver; the proof comes from the lifecycle session.
   assert.equal(body.agent, "manual");
   assert.equal(body.hookActiveSource, "lifecycle");
+  assert.deepEqual(
+    { kind: body.record.kind, agent: body.record.agent, hostSessionId: body.record.hostSessionId },
+    { kind: "manual-deliver", agent: "manual", hostSessionId: null },
+  );
+  // The top-level configuration flag follows the hook proof, never false beside a current lifecycle.
+  assert.equal(body.hookConfigurationCurrent, true);
+  assert.equal(body.lifecycle.configurationCurrent, true);
+  assert.equal(body.lifecycle.hostSessionId, "thin-proof");
   const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
   assert.match(text, /this record is not hook proof/);
   assert.match(text, /hook proof \(hookActive\): yes, from the lifecycle session/);
@@ -214,10 +222,16 @@ test("default thin Stop leaves lifecycle proof: SessionStart, each Stop, and the
   // Another Stop still sees the same stamp, so recording observations cannot change decisions.
   assert.equal(hook(repo, "claude", "stop", payload).stdout.trim(), "");
 
-  // A later edit makes the bound proof stale until the change is delivered again.
+  // A later edit makes the delivery stamp stale, not the hook proof: the hook
+  // ran and accepted verified evidence under this configuration.
   write(repo, "src/core.ts", "export const value = 3;\n");
-  assert.equal(evidenceJson(repo).hookActive, false);
-  assert.equal(inspectAgentHookStatus(repo).state, "degraded");
+  const later = evidenceJson(repo);
+  assert.equal(later.hookActive, true);
+  assert.equal(later.lifecycle.evidencePassed, true);
+  assert.equal(later.lifecycle.evidenceCurrent, false);
+  assert.equal(later.lifecycle.evidenceValid, false);
+  assert.equal(later.stamp.status, "stale");
+  assert.equal(inspectAgentHookStatus(repo).state, "active");
 });
 
 test("a thin Stop on a clean tree is observed but is not gate proof", () => {
@@ -385,7 +399,9 @@ test("execute mode: SessionStart base + Stop runs checks without demanding a new
   });
   assert.equal(stale.status, 1);
   assert.equal(JSON.parse(stale.stdout).stale, true);
-  assert.equal(inspectAgentHookStatus(repo).state, "degraded");
+  // The record no longer covers the change, but it still proves the hooks ran.
+  assert.equal(JSON.parse(stale.stdout).lifecycle.evidenceCurrent, false);
+  assert.equal(inspectAgentHookStatus(repo).state, "active");
 });
 
 test("Codex linked dispatcher: config change without code changes does not demand a new session", () => {
@@ -453,4 +469,66 @@ contracts:
   const response = JSON.parse(stopped.stdout);
   assert.equal(response.decision, "block");
   assert.match(response.reason, /timed out|budget exhausted/);
+});
+
+test("a Stop the client re-runs right after a block, with nothing changed, exits the loop unverified", () => {
+  const repo = fixture();
+  assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
+  commit(repo, "install lifecycle hooks");
+  const payload = { session_id: "loop-exit" };
+  assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+
+  const first = hook(repo, "claude", "stop", payload);
+  assert.equal(JSON.parse(first.stdout).decision, "block");
+  assert.match(JSON.parse(first.stdout).reason, /not blocked twice in a row/);
+
+  // Progress (any change) is still gated.
+  write(repo, "test/core.test.ts", "// covers 2, again\n");
+  const progressed = hook(repo, "claude", "stop", { ...payload, stop_hook_active: true });
+  assert.equal(JSON.parse(progressed.stdout).decision, "block");
+
+  // The Agent could not deliver and stopped again on the same change: allowed, never verified.
+  const exited = hook(repo, "claude", "stop", { ...payload, stop_hook_active: true });
+  assert.equal(exited.status, 0);
+  const notice = JSON.parse(exited.stdout);
+  assert.equal(notice.decision, undefined);
+  assert.match(notice.systemMessage, /WITHOUT verified delivery/);
+  const body = evidenceJson(repo);
+  assert.equal(body.lifecycle.stop.decision, "allow");
+  assert.equal(body.lifecycle.stop.reason, "loop-exit");
+  assert.equal(body.hookActive, false);
+  const status = inspectAgentHookStatus(repo);
+  assert.equal(status.state, "degraded");
+  assert.ok(status.issues.some((issue) => /ended without verified delivery \(loop-exit/.test(issue)), status.issues.join("; "));
+
+  // The next turn starts gated again.
+  assert.equal(JSON.parse(hook(repo, "claude", "stop", payload).stdout).decision, "block");
+});
+
+test("the loop exit also covers a Stop without SessionStart and Cursor's loop_count", () => {
+  const repo = fixture();
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  const payload = { session_id: "mid-session-install" };
+  assert.equal(JSON.parse(hook(repo, "claude", "stop", payload).stdout).decision, "block");
+  // Not continuing: a fresh turn on the same change is blocked again.
+  assert.equal(JSON.parse(hook(repo, "claude", "stop", payload).stdout).decision, "block");
+  const exited = hook(repo, "claude", "stop", { ...payload, stop_hook_active: true });
+  assert.match(JSON.parse(exited.stdout).systemMessage, /WITHOUT verified delivery/);
+
+  const cursor = { conversation_id: "cursor-loop" };
+  assert.match(JSON.parse(hook(repo, "cursor", "stop", { ...cursor, loop_count: 0 }).stdout).followup_message, /deliver/);
+  assert.deepEqual(JSON.parse(hook(repo, "cursor", "stop", { ...cursor, loop_count: 1 }).stdout), {});
+
+  // Execute mode uses the same exit.
+  const executeEnv = { HARNESS_KIT_STOP_MODE: "execute", HK_TEST_FAIL: "1", HK_TEST_MESSAGE: "red" };
+  const codex = { session_id: "execute-loop" };
+  assert.equal(hook(repo, "codex", "session-start", codex, executeEnv).status, 0);
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  assert.equal(JSON.parse(hook(repo, "codex", "stop", codex, executeEnv).stdout).decision, "block");
+  const codexExit = hook(repo, "codex", "stop", { ...codex, stop_hook_active: true }, executeEnv);
+  assert.equal(codexExit.status, 0);
+  assert.equal(codexExit.stdout.trim(), "");
+  assert.match(codexExit.stderr, /WITHOUT verified delivery/);
 });

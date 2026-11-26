@@ -38,7 +38,7 @@ function runVerifyText(repo: string, details = false): { status: number; stdout:
 test("verify --json emits one structured document", () => {
   const repo = mkdtempSync(join(tmpdir(), "hk-verify-json-"));
   write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: json, summary: json fixture }\n");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const result = runVerify(repo);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.body.schema, "ai-harness/verify-report/v1");
@@ -82,7 +82,7 @@ validation:
         test_touch: required
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const result = runVerify(repo);
   assert.equal(result.status, 1);
@@ -108,7 +108,7 @@ contracts:
   - { id: unchecked-api, kind: api, desc: unchecked }
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
 
   const compact = runVerifyText(repo);
   assert.equal(compact.status, 0, compact.stderr + compact.stdout);
@@ -182,7 +182,7 @@ test("a directory at a contract snapshot path becomes one structured verify fail
       contracts: [{ id: "http-api", kind: "api", desc: "HTTP API", snapshot: "printf stable" }],
     }),
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   mkdirSync(join(repo, ".agents/contracts/http-api.snapshot"), { recursive: true });
 
   const result = runVerify(repo);
@@ -202,7 +202,7 @@ test("corrupt context state fails inside verify JSON instead of breaking the out
     ".agents/manifest.yaml",
     "spec: ai-harness/v0\nidentity: { name: state, summary: state fixture }\nknowledge: [{ path: knowledge/api.md, authority: derived, binds: [src/api.ts] }]\n",
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   write(repo, ".agents/.harness-state.json", "{broken\n");
   const result = runVerify(repo);
   assert.equal(result.status, 1);
@@ -226,7 +226,7 @@ knowledge:
     binds: [src/api.ts]
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const blocked = runVerify(repo);
   assert.equal(blocked.status, 1);
   assert.equal(blocked.body.context[0].severity, "blocking");
@@ -240,7 +240,7 @@ knowledge:
 test("verify rejects a content-matching but unsafe generated-file symlink", () => {
   const repo = mkdtempSync(join(tmpdir(), "hk-verify-link-"));
   write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: link, summary: link fixture }\n");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const expectedClaude = join(repo, "CLAUDE.md");
   const elsewhere = join(repo, "elsewhere.md");
   writeFileSync(elsewhere, renderClaudeMd());
@@ -255,7 +255,7 @@ test("verify rejects a content-matching but unsafe generated-file symlink", () =
 test("verify JSON stays structured when an Agent hook config path is not a regular project file", () => {
   const repo = mkdtempSync(join(tmpdir(), "hk-verify-hook-dir-"));
   write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: hook-dir }\n");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   mkdirSync(join(repo, ".codex", "hooks.json"), { recursive: true });
 
   const result = runVerify(repo);
@@ -311,7 +311,7 @@ knowledge:
     binds: [src/api.ts]
 `,
   );
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   recordContextReview(repo, loadManifest(repo), { path: "engineering/api.md", reason: "checked" });
   gitCommit(repo, "reviewed");
   write(repo, "src/api.ts", "export const route = '/v2';\n");
@@ -337,10 +337,89 @@ test("verify NEXT action commands use the lock-pinned invocation", () => {
   const repo = mkdtempSync(join(tmpdir(), "hk-verify-pinned-"));
   write(repo, ".agents/manifest.yaml", "spec: ai-harness/v0\nidentity: { name: pinned, summary: pinned }\n");
   pinLock(repo, "1.2.3");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   const result = runVerify(repo);
   assert.equal(result.status, 0, result.stdout);
   const commands = result.body.nextActions.flatMap((action: any) => action.commands);
   assert.ok(commands.length > 0);
   assert.ok(commands.every((command: string) => command.startsWith("npx -y @erzhe/harness-kit@1.2.3 ")), commands.join("\n"));
+});
+
+test("a failing verify always names the next required step", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-verify-next-"));
+  write(repo, "src/api.ts", "export const route = '/v1';\n");
+  write(repo, ".agents/knowledge/api.md", "The route is /v1.\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    `spec: ai-harness/v0
+identity: { name: next, summary: next-action fixture }
+knowledge:
+  - path: knowledge/api.md
+    authority: derived
+    binds: [src/api.ts]
+modules:
+  - name: api
+    role: route handlers
+    entry: [src/api.ts]
+`,
+  );
+  syncCmd(repo, { createEntry: true });
+  recordContextReview(repo, loadManifest(repo), { path: "knowledge/api.md", reason: "checked" });
+  recordContextReview(repo, loadManifest(repo), { module: "api", reason: "checked" });
+  // Even a comment-only edit to the bound entry file asks for a fresh review of both.
+  write(repo, "src/api.ts", "// handlers\nexport const route = '/v1';\n");
+  const stale = runVerify(repo);
+  assert.equal(stale.status, 1);
+  const review = stale.body.nextActions.find((action: any) => action.id === "record-context-reviews");
+  assert.equal(review?.priority, "required");
+  assert.match(review.reason, /changed sources: src\/api\.ts/);
+  assert.match(review.commands[0], /record-context-review --repo \. --path knowledge\/api\.md --module api --reason/);
+  assert.doesNotMatch(runVerifyText(repo).stdout, /nothing required now/);
+
+  // A failure that no review can clear still gets a required action.
+  recordContextReview(repo, loadManifest(repo), { path: "knowledge/api.md", reason: "checked" });
+  recordContextReview(repo, loadManifest(repo), { module: "api", reason: "checked" });
+  write(repo, "AGENTS.md", "hand edit\n");
+  const drift = runVerify(repo);
+  assert.equal(drift.status, 1);
+  assert.equal(drift.body.nextActions[0].id, "fix-verify-failures");
+  assert.equal(drift.body.nextActions[0].priority, "required");
+});
+
+test("verify gives invariant and contract checks the same change context as run-checks", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-verify-env-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  write(repo, "src/core.ts", "export const value = 1;\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    `spec: ai-harness/v0
+identity: { name: env, summary: change-context fixture }
+invariants:
+  - id: sees-the-task-diff
+    rule: the check reads the task base and changed files
+    check: 'test -n "$HARNESS_KIT_BASE" && grep -qx src/core.ts "$HARNESS_KIT_CHANGED_FILES"'
+contracts:
+  - id: sees-the-task-diff-too
+    kind: other
+    desc: contract checks get it as well
+    check: 'grep -qx src/core.ts "$HARNESS_KIT_CHANGED_FILES"'
+`,
+  );
+  syncCmd(repo, { createEntry: true });
+  gitCommit(repo, "initial");
+  // A task-start base makes a committed change part of the task diff.
+  const start = spawnSync(TSX, [CLI, "task-start", "--repo", repo], { encoding: "utf8" });
+  assert.equal(start.status, 0, start.stdout);
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  gitCommit(repo, "task change");
+  const result = runVerify(repo);
+  assert.equal(result.status, 0, JSON.stringify(result.body.messages));
+  // Values from an outer run never leak in.
+  const outer = spawnSync(TSX, [CLI, "verify", "--repo", repo, "--json"], {
+    encoding: "utf8",
+    env: { ...process.env, HARNESS_KIT_CHANGED_FILES: "/nonexistent" },
+  });
+  assert.equal(outer.status, 0);
 });

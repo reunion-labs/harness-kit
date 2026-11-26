@@ -7,14 +7,16 @@ import { lockedHarnessVersion, repoHarnessInvocation } from "../harness-cli";
 import { inspectAgentHookStatus } from "../hook-status";
 import { loadManifest, validateManifest } from "../manifest";
 import { inspectManagedFiles } from "../managed-files";
-import { renderAgentsMd, renderTargets } from "../render";
+import { agentsMdSize, renderTargets } from "../render";
 import { inspectContextFreshness, readState, resolveKnowledgePath } from "../state";
 import { err, info, ok, warn } from "../util";
 import { inspectValidationGateHealth } from "../validation-gates";
 
 // AGENTS.md must stay short (progressive disclosure): it is an index, not a dump.
+// The word budget counts what the repository controls; the fixed Harness
+// working agreement, header, and map (about 300 words) are the same everywhere.
 const AGENTS_MAX_LINES = 150;
-const AGENTS_MAX_WORDS = 700;
+const AGENTS_MAX_CONTENT_WORDS = 500;
 
 export interface DoctorOpts {
   details?: boolean;
@@ -220,16 +222,14 @@ export function doctorCmd(repo: string, opts: DoctorOpts = {}): number {
   }
 
   info("\n6) AGENTS.md size budget (must stay short — agents read it every session)");
-  const agents = renderAgentsMd(m, render);
-  const nLines = agents.split("\n").length;
-  const nWords = agents.trim().split(/\s+/).length;
-  if (nLines > AGENTS_MAX_LINES || nWords > AGENTS_MAX_WORDS) {
-    warn(
-      `AGENTS.md is ${nLines} lines / ${nWords} words (budget ${AGENTS_MAX_LINES}/${AGENTS_MAX_WORDS}). ` +
-        "Move detail into .agents/knowledge/ and keep AGENTS.md as an index.",
-    );
+  const size = agentsMdSize(m, render);
+  const sizeText =
+    `AGENTS.md ${size.lines} lines / ${size.words} words; repository content ${size.contentWords} words ` +
+    `(budget ${AGENTS_MAX_LINES} lines / ${AGENTS_MAX_CONTENT_WORDS} content words; fixed Harness text not counted)`;
+  if (size.lines > AGENTS_MAX_LINES || size.contentWords > AGENTS_MAX_CONTENT_WORDS) {
+    warn(`${sizeText}. Move detail into .agents/knowledge/ and keep AGENTS.md as an index.`);
   } else {
-    ok(`AGENTS.md ${nLines} lines / ${nWords} words (within budget)`);
+    ok(`${sizeText} — within budget`);
   }
 
   info("\n7) Agent lifecycle hooks");

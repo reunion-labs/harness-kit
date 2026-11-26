@@ -4,12 +4,15 @@ import { collectChanges, EMPTY_TREE_BASE, gitRoot } from "../git";
 import { repoHarnessInvocation } from "../harness-cli";
 import { agentHookConfigurationFingerprint } from "../hook-status";
 import {
+  clearStopGuard,
   clearValidationEvidence,
   markLatestVerifyResult,
+  readStopGuard,
   readValidationSession,
   recordStopObservation,
   startValidationSession,
   validationSessionToken,
+  writeStopGuard,
   type HookAgent,
   type StopObservation,
   type ValidationEvidence,
@@ -107,12 +110,16 @@ function repoArgument(repo: string): string {
   return /^[A-Za-z0-9_./@%+=:,-]+$/.test(repo) ? repo : `'${repo.replace(/'/g, `'"'"'`)}'`;
 }
 
+const LOOP_EXIT_HINT =
+  "If deliver cannot run in this session, stop and say the change is not verified; an unchanged change is not blocked twice in a row.";
+
 function deliverBlockMessage(cli: string, repo: string, extra = ""): string {
   const lines = [
     "harness-kit: delivery is not verified; continue working before stopping.",
     `Run: ${cli} deliver --repo ${repoArgument(repo)}`,
     "Only status=accepted (or no-change with a clean tree) may finish.",
     "Fix failures from deliver, then finish again.",
+    LOOP_EXIT_HINT,
   ];
   if (extra.trim()) lines.splice(1, 0, extra.trim());
   return lines.join("\n");
@@ -145,6 +152,7 @@ function failureMessage(report: RunChecksReport | null, verifyOutput: string, to
   lines.push(
     `For a genuine non-goal coverage gap only: ${cli} run-checks --repo ${repoArgument(repo)} --session ${token} --waive <kind> --where <scope> --reason "<why>"`,
   );
+  lines.push(LOOP_EXIT_HINT);
   return lines.join("\n");
 }
 
@@ -165,32 +173,97 @@ function observeStop(
   }
 }
 
-function thinStop(repo: string, agent: HookEventOpts["agent"], id: string): number {
-  const cli = repoHarnessInvocation(repo);
-  const token = validationSessionToken(agent, id);
+interface StopContext {
+  repo: string;
+  agent: HookEventOpts["agent"];
+  token: string;
+  cli: string;
+  /** The client re-runs Stop because the previous one blocked (stop_hook_active / loop_count). */
+  continuing: boolean;
+}
+
+function continuingStop(payload: HookPayload): boolean {
+  return payload.stop_hook_active === true || (typeof payload.loop_count === "number" && payload.loop_count > 0);
+}
+
+function allowStop(ctx: StopContext): number {
+  clearStopGuard(ctx.repo, ctx.token);
+  return allow(ctx.agent);
+}
+
+/** Allowed without gate evidence: tell the user, never pretend it was verified. */
+function allowUnverified(agent: HookEventOpts["agent"], notice: string): number {
+  process.stderr.write(notice + "\n");
+  if (agent === "cursor") process.stdout.write("{}\n");
+  else if (agent === "claude") process.stdout.write(JSON.stringify({ systemMessage: notice }) + "\n");
+  return 0;
+}
+
+/**
+ * Block this Stop, unless the client re-runs it right after our previous block
+ * and the change is byte-for-byte the same. An Agent that cannot deliver here
+ * (no tool access, CLI unreachable) would otherwise loop forever; progress
+ * (any change) still blocks again. The exit is recorded as lifecycle evidence
+ * `loop-exit`, which never counts as gate evidence.
+ */
+function blockStop(ctx: StopContext, mode: StopObservation["mode"], fingerprint: string, reason: string): number {
+  let previous: string | null = null;
+  try {
+    previous = readStopGuard(ctx.repo, ctx.token);
+  } catch {
+    previous = null;
+  }
+  if (ctx.continuing && previous === fingerprint) {
+    clearStopGuard(ctx.repo, ctx.token);
+    observeStop(ctx.repo, ctx.token, { mode, decision: "allow", reason: "loop-exit", fingerprint }, null);
+    return allowUnverified(
+      ctx.agent,
+      "harness-kit: Stop allowed WITHOUT verified delivery: nothing changed since the previous block. " +
+        `Say in your reply that this change is not verified; run ${ctx.cli} deliver --repo ${repoArgument(ctx.repo)} when you can.`,
+    );
+  }
+  try {
+    writeStopGuard(ctx.repo, ctx.token, fingerprint);
+  } catch {
+    // Unwritable Git admin state only loses the loop exit; the block stands.
+  }
+  return block(ctx.agent, "stop", reason);
+}
+
+function scopeFingerprint(repo: string, base?: string | null): string {
+  try {
+    return base ? collectChanges(repo, base, { mode: "exact" }).fingerprint : resolveChangeScope(repo).changes.fingerprint;
+  } catch {
+    return "(scope-error)";
+  }
+}
+
+function thinStop(ctx: StopContext): number {
+  const { repo, token, cli } = ctx;
   let scope;
   try {
     scope = resolveChangeScope(repo);
   } catch (error) {
     observeStop(repo, token, { mode: "thin", decision: "block", reason: "scope-error" }, null);
-    return block(agent, "stop", deliverBlockMessage(cli, repo, `cannot resolve changes: ${(error as Error).message}`));
+    return blockStop(ctx, "thin", "(scope-error)", deliverBlockMessage(cli, repo, `cannot resolve changes: ${(error as Error).message}`));
   }
   const fingerprint = scope.changes.fingerprint;
   if (scope.changes.files.length === 0) {
     observeStop(repo, token, { mode: "thin", decision: "allow", reason: "clean", fingerprint }, null);
-    return allow(agent);
+    return allowStop(ctx);
   }
   // The accepted deliver stamp this Stop relied on becomes the session's gate
   // evidence, so the default thin mode can prove the gate (hookActive / ACTIVE).
   const stamp = coveringStampEvidence(repo, scope);
   if (stamp) {
     observeStop(repo, token, { mode: "thin", decision: "allow", reason: "stamp", fingerprint }, { ...stamp, source: "deliver-stamp" });
-    return allow(agent);
+    return allowStop(ctx);
   }
   observeStop(repo, token, { mode: "thin", decision: "block", reason: "no-stamp", fingerprint }, null);
-  return block(
-    agent,
-    "stop",
+  return blockStop(
+    ctx,
+    "thin",
+    fingerprint,
     deliverBlockMessage(
       cli,
       repo,
@@ -199,20 +272,19 @@ function thinStop(repo: string, agent: HookEventOpts["agent"], id: string): numb
   );
 }
 
-function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): number {
-  const cli = repoHarnessInvocation(repo);
-  const token = validationSessionToken(agent, id);
+function executeStop(ctx: StopContext): number {
+  const { repo, agent, token, cli } = ctx;
   let session;
   try {
     session = readValidationSession(repo, token);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, repo, `validation session unreadable: ${(error as Error).message}`));
+    return blockStop(ctx, "execute", scopeFingerprint(repo), deliverBlockMessage(cli, repo, `validation session unreadable: ${(error as Error).message}`));
   }
 
   // No SessionStart: still deliver via shared engine (do NOT demand a new session).
   if (!session) {
     const delivered = captureStdout(() => deliverCmd(repo, { json: true }));
-    if (delivered.code === 0) return allow(agent);
+    if (delivered.code === 0) return allowStop(ctx);
     let detail = "";
     try {
       const body = JSON.parse(delivered.output) as { errors?: string[]; status?: string };
@@ -220,7 +292,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
     } catch {
       detail = delivered.output.trim().slice(0, 500);
     }
-    return block(agent, "stop", deliverBlockMessage(cli, repo, detail));
+    return blockStop(ctx, "execute", scopeFingerprint(repo), deliverBlockMessage(cli, repo, detail));
   }
 
   // Config fingerprint change: do not trust lifecycle binding, but still accept a fresh deliver stamp path.
@@ -230,10 +302,11 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   ) {
     // Fall through to deliver-based acceptance for current scope rather than "start a new session".
     const delivered = captureStdout(() => deliverCmd(repo, { json: true }));
-    if (delivered.code === 0) return allow(agent);
-    return block(
-      agent,
-      "stop",
+    if (delivered.code === 0) return allowStop(ctx);
+    return blockStop(
+      ctx,
+      "execute",
+      scopeFingerprint(repo),
       deliverBlockMessage(
         cli,
         repo,
@@ -245,7 +318,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   try {
     clearValidationEvidence(repo, session);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, repo, `could not start a fresh validation attempt: ${(error as Error).message}`));
+    return blockStop(ctx, "execute", scopeFingerprint(repo, session.baseSha ?? EMPTY_TREE_BASE), deliverBlockMessage(cli, repo, `could not start a fresh validation attempt: ${(error as Error).message}`));
   }
 
   const run = captureStdout(() => runChecksCmd(repo, { session: token, json: true, budgetMs: 0 }));
@@ -273,16 +346,17 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   try {
     evidencePersisted = markLatestVerifyResult(repo, token, verifyPassed, report?.fingerprint, report?.planFingerprint);
   } catch (error) {
-    return block(agent, "stop", deliverBlockMessage(cli, repo, `could not persist verify result: ${(error as Error).message}`));
+    return blockStop(ctx, "execute", scopeFingerprint(repo, session.baseSha ?? EMPTY_TREE_BASE), deliverBlockMessage(cli, repo, `could not persist verify result: ${(error as Error).message}`));
   }
   const passed = run.code === 0 && !!report?.ok && verifyPassed && evidencePersisted;
+  const fingerprint = report?.fingerprint ?? scopeFingerprint(repo, session.baseSha ?? EMPTY_TREE_BASE);
   observeStop(repo, token, {
     mode: "execute",
     decision: passed ? "allow" : "block",
     reason: "checks",
     ...(report?.fingerprint ? { fingerprint: report.fingerprint } : {}),
   });
-  if (passed) return allow(agent);
+  if (passed) return allowStop(ctx);
   const verifyDetails = [
     verify.code === 0 ? "" : verify.output.trim(),
     finalFingerprintError,
@@ -290,7 +364,7 @@ function executeStop(repo: string, agent: HookEventOpts["agent"], id: string): n
   ]
     .filter(Boolean)
     .join("\n");
-  return block(agent, "stop", failureMessage(report, verifyDetails, token, cli, repo));
+  return blockStop(ctx, "execute", fingerprint, failureMessage(report, verifyDetails, token, cli, repo));
 }
 
 export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {
@@ -344,6 +418,13 @@ export function hookEventCmd(repoInput: string, opts: HookEventOpts): number {
 
   if (opts.agent === "cursor" && ["aborted", "error"].includes(payload.status ?? "")) return allow(opts.agent);
 
-  if (stopMode() === "thin") return thinStop(repo, opts.agent, id);
-  return executeStop(repo, opts.agent, id);
+  const ctx: StopContext = {
+    repo,
+    agent: opts.agent,
+    token: validationSessionToken(opts.agent, id),
+    cli: repoHarnessInvocation(repo),
+    continuing: continuingStop(payload),
+  };
+  if (stopMode() === "thin") return thinStop(ctx);
+  return executeStop(ctx);
 }

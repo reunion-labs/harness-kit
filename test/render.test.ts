@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderAgentsMd, renderTargets } from "../src/render";
+import { agentsMdSize, countWords, renderAgentsMd, renderModulesMd, renderTargets } from "../src/render";
 import type { Manifest } from "../src/manifest";
 
 const base: Manifest = {
@@ -179,7 +179,7 @@ test("the fixed working agreement stays small and states the task-start rule onc
   };
   const md = renderAgentsMd(manifest, { harnessVersion: "0.7.2" });
   const agreement = md.slice(md.indexOf("## Working agreement"), md.indexOf("## ", md.indexOf("## Working agreement") + 3));
-  // The 700-word AGENTS.md budget is for the project; the fixed part must leave it most of the room.
+  // The word budget counts project content only, but the fixed part must still stay small.
   assert.ok(agreement.trim().split(/\s+/).length <= 240, `working agreement is ${agreement.trim().split(/\s+/).length} words`);
   assert.equal(agreement.match(/task-start/g)?.length, 1);
 });
@@ -196,4 +196,43 @@ test("the contracts heading does not assume the repository versions its interfac
   assert.doesNotMatch(md, /version bump/);
   assert.match(md, /- http \[http-api\]: routes/);
   assert.match(md, /- lib \[public-api\] \(breaking -> major\): exports/);
+});
+
+test("invariants carry the id that scope, routing, and module cards refer to", () => {
+  const md = renderAgentsMd({
+    ...base,
+    invariants: [
+      { id: "no-live-tests", rule: "Tests never call live services", manual: true },
+      { id: "no-console-log", rule: "No console.log", enforcement: { forbid_pattern: ["console\\.log\\("] } },
+    ],
+  });
+  assert.match(md, /^- `no-live-tests`: Tests never call live services \[manual\]$/m);
+  assert.match(md, /^- `no-console-log`: No console\.log \[enforced\]$/m);
+});
+
+test("dependencies render one item per line, so commas and semicolons inside an item stay readable", () => {
+  const manifest: Manifest = {
+    ...base,
+    identity: { ...base.identity, upstream: ["user-service (gRPC; ids, profiles)", "config center"], downstream: ["web, admin"] },
+    modules: [{ name: "api", role: "r", entry: ["src/a.ts"], upstream: ["db; cache"], downstream: ["web"] }],
+  };
+  const md = renderAgentsMd(manifest);
+  assert.match(md, /^Upstream:\n- user-service \(gRPC; ids, profiles\)\n- config center$/m);
+  assert.match(md, /^Downstream:\n- web, admin$/m);
+  assert.match(renderModulesMd(manifest), /^- Upstream:\n  - db; cache\n- Downstream:\n  - web$/m);
+});
+
+test("the AGENTS.md word budget counts repository content, and CJK spacing is not extra words", () => {
+  assert.equal(countWords("中文 English 中文"), countWords("中文English中文"));
+  assert.equal(countWords("规则： 不要 log token。"), countWords("规则：不要log token。"));
+  assert.equal(countWords("plain english words"), 3);
+  const bare = agentsMdSize({ spec: "ai-harness/v0", identity: { name: "x" } });
+  // Fixed Harness text (header, working agreement, map) is not the repository's content.
+  assert.ok(bare.words > 150, `${bare.words}`);
+  assert.equal(bare.contentWords, countWords("# x"));
+  const rich = agentsMdSize({
+    ...base,
+    invariants: [{ id: "rule-a", rule: "one two three four five", manual: true }],
+  });
+  assert.equal(rich.contentWords - agentsMdSize(base).contentWords, countWords("## Invariants (must hold)\n- `rule-a`: one two three four five [manual]"));
 });

@@ -382,7 +382,7 @@ test("install-hooks --stop writes a pinned shared runner + SessionStart/Stop hoo
   assert.match(runner, /@erzhe\/harness-kit@\d+\.\d+\.\d+/);
   assert.match(
     runner,
-    /cd "\$\{TMPDIR:-\/tmp\}" && npx -y @erzhe\/harness-kit@\d+\.\d+\.\d+ hook-event/,
+    /cd "\$\{TMPDIR:-\/tmp\}" && printf '%s' "\$PAYLOAD" \| npx --prefer-offline -y @erzhe\/harness-kit@\d+\.\d+\.\d+ hook-event/,
     "the pinned package resolves outside a same-named target repository",
   );
   assert.ok((statSync(script).mode & 0o100) !== 0, "runner is executable");
@@ -566,6 +566,20 @@ test("a legal command override invalidates ACTIVE evidence until that exact conf
   assert.ok(status.issues.some((issue) => /different hook configuration/.test(issue)));
 });
 
+test("after an upgrade, an older managed runner is reported as outdated, not damaged", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const runner = join(dir, ".agents", "hooks", "harness-agent-hook.sh");
+  writeFileSync(runner, readFileSync(runner, "utf8").replace(/@erzhe\/harness-kit@\d+\.\d+\.\d+[^ ]*/g, "@erzhe/harness-kit@0.0.1"));
+  const status = inspectAgentHookStatus(dir);
+  assert.equal(status.state, "degraded");
+  assert.ok(
+    status.issues.some((issue) => /is a managed runner pinned to @erzhe\/harness-kit@0\.0\.1 .*re-run install-hooks to update it/.test(issue)),
+    status.issues.join("; "),
+  );
+  assert.ok(!status.issues.some((issue) => /not a managed executable runner/.test(issue)));
+});
+
 test("hook status rejects a marker-only runner even with current lifecycle evidence", () => {
   const dir = freshRepo();
   assert.equal(installHooksCmd(dir, { stop: true, agents: ["codex"] }), 0);
@@ -738,6 +752,59 @@ test("the shared runner converts infrastructure failures into each client's bloc
   });
   assert.equal(claudeStart.status, 2);
   assert.match(claudeStart.stderr, /infrastructure failed/);
+});
+
+test("without the CLI, the runner never blocks a clean worktree and blocks a dirty one only once", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude", "cursor", "codex"] }), 0);
+  git(dir, ["add", "."]);
+  git(dir, ["-c", "user.name=Harness Kit Test", "-c", "user.email=harness-kit@example.test", "commit", "-qm", "initial"]);
+  const runner = join(dir, ".agents", "hooks", "harness-agent-hook.sh");
+  // An unreachable registry looks the same to the runner: the CLI exits non-zero.
+  const env = { ...process.env, HARNESS_KIT_CMD: "false" };
+  const stop = (agent: string, payload: Record<string, unknown>) =>
+    spawnSync("bash", [runner, agent, "stop"], { cwd: dir, input: JSON.stringify(payload), encoding: "utf8", env });
+
+  // Clean worktree (a read-only `claude -p` query): nothing to judge, so no block.
+  const clean = stop("claude", { session_id: "read-only" });
+  assert.equal(clean.status, 0);
+  assert.equal(JSON.parse(clean.stdout).decision, undefined);
+  assert.match(JSON.parse(clean.stdout).systemMessage, /Stop allowed WITHOUT a delivery check/);
+  assert.equal(stop("codex", { session_id: "read-only" }).stdout, "");
+  assert.deepEqual(JSON.parse(stop("cursor", { conversation_id: "read-only" }).stdout), {});
+
+  // Undelivered change: block once, then honor the client's re-run marker.
+  writeFileSync(join(dir, "change.txt"), "dirty\n");
+  const blocked = stop("claude", { session_id: "dirty" });
+  assert.equal(JSON.parse(blocked.stdout).decision, "block");
+  assert.match(JSON.parse(blocked.stdout).reason, /blocks a turn only once/);
+  const again = stop("claude", { session_id: "dirty", stop_hook_active: true });
+  assert.equal(again.status, 0);
+  assert.equal(JSON.parse(again.stdout).decision, undefined);
+  assert.match(again.stderr, /not verified/);
+  assert.equal(JSON.parse(stop("codex", { session_id: "dirty" }).stdout).decision, "block");
+  assert.equal(stop("codex", { session_id: "dirty", stop_hook_active: true }).stdout, "");
+  assert.match(JSON.parse(stop("cursor", { conversation_id: "dirty", loop_count: 0 }).stdout).followup_message, /infrastructure failed/);
+  assert.deepEqual(JSON.parse(stop("cursor", { conversation_id: "dirty", loop_count: 1 }).stdout), {});
+  // A message that merely quotes the marker is not the client's flag.
+  const quoted = stop("claude", { session_id: "dirty", last_assistant_message: 'set \\"stop_hook_active\\": true' });
+  assert.equal(JSON.parse(quoted.stdout).decision, "block");
+});
+
+test("the runner hands the client's hook payload to the CLI unchanged", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const fake = join(mkdtempSync(join(tmpdir(), "hk-hooks-fake-cli-")), "echo-stdin.sh");
+  writeFileSync(fake, "#!/bin/sh\ncat\n", { mode: 0o755 });
+  const payload = JSON.stringify({ session_id: "s-1", stop_hook_active: false });
+  const result = spawnSync("bash", [join(dir, ".agents", "hooks", "harness-agent-hook.sh"), "claude", "stop"], {
+    cwd: dir,
+    input: payload,
+    encoding: "utf8",
+    env: { ...process.env, HARNESS_KIT_CMD: fake },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${payload}\n`);
 });
 
 test("installed outer commands still block when the shared runner is missing", () => {

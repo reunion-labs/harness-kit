@@ -1,7 +1,12 @@
 import { inspectDeliveryStamp, type DeliveryStamp } from "../delivery";
 import { buildHarnessGuidance, type HarnessNextAction } from "../guidance";
 import { repoHarnessInvocation } from "../harness-cli";
-import { agentHookConfigurationFingerprint, inspectAgentHookStatus, type AgentHookStatus } from "../hook-status";
+import {
+  agentHookConfigurationFingerprint,
+  inspectAgentHookStatus,
+  lifecycleEvidencePassed,
+  type AgentHookStatus,
+} from "../hook-status";
 import {
   inspectValidationEvidenceFreshness,
   readLatestHookValidationSession,
@@ -21,7 +26,10 @@ export interface EvidenceOpts {
 /** What the installed lifecycle hooks have demonstrably done for one Agent session. */
 export interface LifecycleProof {
   agent: Exclude<HookAgent, "manual">;
+  /** Harness token for this session: sha256 of agent and host session id. */
   session: string;
+  /** The client's own session id, so a lifecycle record can be matched to a real conversation. */
+  hostSessionId: string;
   sessionStartedAt: string;
   baseSha: string | null;
   /** The runner and client config bound at SessionStart are still the installed ones. */
@@ -30,9 +38,13 @@ export interface LifecycleProof {
   stop: StopObservation | null;
   /** run-checks: execute-mode Stop ran the gates; deliver-stamp: a thin Stop accepted this deliver stamp. */
   evidenceSource: "run-checks" | "deliver-stamp" | null;
-  /** That gate evidence passed run-checks + verify and still matches the current change. */
+  /** That gate evidence passed run-checks + verify when the Stop accepted it. */
+  evidencePassed: boolean;
+  /** It still matches the current change (later edits make it older, not invalid proof). */
+  evidenceCurrent: boolean;
+  /** evidencePassed and evidenceCurrent. */
   evidenceValid: boolean;
-  /** Same rule as the ACTIVE hook state: current configuration and valid gate evidence. */
+  /** Same rule as the ACTIVE hook state: current configuration and passed gate evidence. */
   active: boolean;
 }
 
@@ -41,22 +53,21 @@ function lifecycleProof(repo: string, session: ValidationSession | null): Lifecy
   const configurationCurrent =
     !!session.hookConfigFingerprint && agentHookConfigurationFingerprint(repo, session.agent) === session.hookConfigFingerprint;
   const evidence = session.lastEvidence;
-  let evidenceValid = false;
-  if (evidence) {
-    const runChecksStatus = evidence.runChecksStatus ?? (evidence.ok ? evidence.status : "not-verified");
-    evidenceValid =
-      runChecksStatus !== "not-verified" && evidence.verifyPassed === true && !inspectValidationEvidenceFreshness(repo, evidence).stale;
-  }
+  const evidencePassed = !!evidence && lifecycleEvidencePassed(evidence);
+  const evidenceCurrent = !!evidence && !inspectValidationEvidenceFreshness(repo, evidence).stale;
   return {
     agent: session.agent,
     session: session.token,
+    hostSessionId: session.sessionId,
     sessionStartedAt: session.createdAt,
     baseSha: session.baseSha,
     configurationCurrent,
     stop: session.lastStop ?? null,
     evidenceSource: evidence ? evidence.source ?? "run-checks" : null,
-    evidenceValid,
-    active: configurationCurrent && evidenceValid,
+    evidencePassed,
+    evidenceCurrent,
+    evidenceValid: evidencePassed && evidenceCurrent,
+    active: configurationCurrent && evidencePassed,
   };
 }
 
@@ -74,7 +85,11 @@ function describeLifecycle(lifecycle: LifecycleProof | null): string {
     ? `last Stop ${lifecycle.stop.decision} (${lifecycle.stop.mode}, ${lifecycle.stop.reason}) at ${lifecycle.stop.at}`
     : "no Stop observed yet";
   const config = lifecycle.configurationCurrent ? "" : "; hook configuration changed since SessionStart";
-  return `lifecycle: ${lifecycle.agent} session started ${lifecycle.sessionStartedAt}; ${stop}${config}; hookActive: ${lifecycle.active ? "yes" : "no"}`;
+  const older = lifecycle.evidencePassed && !lifecycle.evidenceCurrent ? "; its gate evidence covers an earlier change" : "";
+  return (
+    `lifecycle: ${lifecycle.agent} session ${lifecycle.hostSessionId} started ${lifecycle.sessionStartedAt}; ${stop}${config}${older}; ` +
+    `hookActive: ${lifecycle.active ? "yes" : "no"}`
+  );
 }
 
 function safeHookStatus(repo: string): AgentHookStatus {
@@ -143,12 +158,21 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     return 1;
   }
 
+  // `session` / `agent` / `createdAt` describe this latest validation record,
+  // usually a manual deliver. Hook proof lives in `lifecycle`; `record` says so.
   const body = {
     schema: "ai-harness/evidence/v1",
     found: true,
     session: session.token,
     agent: session.agent,
     createdAt: session.createdAt,
+    record: {
+      kind: session.agent === "manual" ? "manual-deliver" : "lifecycle",
+      session: session.token,
+      agent: session.agent,
+      hostSessionId: session.agent === "manual" ? null : session.sessionId,
+      createdAt: session.createdAt,
+    },
     initialDirty: session.initialDirty,
     evidence: session.lastEvidence,
   };
@@ -159,14 +183,17 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     (evidence.runChecksStatus !== undefined ? evidence.runChecksStatus !== "not-verified" : evidence.ok && evidence.status !== "not-verified") &&
     !stale;
   const valid = runChecksValid && evidence.verifyPassed === true;
-  const hookConfigurationCurrent = session.agent !== "manual" && !!session.hookConfigFingerprint &&
+  const recordHookConfigurationCurrent = session.agent !== "manual" && !!session.hookConfigFingerprint &&
     agentHookConfigurationFingerprint(repo, session.agent) === session.hookConfigFingerprint;
-  const hookActive = (valid && hookConfigurationCurrent) || (lifecycle?.active ?? false);
-  // Top-level agent / hookConfigurationCurrent describe the latest record (often
-  // a manual deliver); say which source actually proved the hooks.
+  const recordProvesHooks = session.agent !== "manual" && lifecycleEvidencePassed(evidence) && recordHookConfigurationCurrent;
+  const hookActive = (lifecycle?.active ?? false) || recordProvesHooks;
+  // A manual record never binds a hook configuration, so the top-level flag
+  // follows the session that is the hook proof instead of reading false beside
+  // a current lifecycle.
+  const hookConfigurationCurrent = lifecycle ? lifecycle.configurationCurrent : recordHookConfigurationCurrent;
   const hookActiveSource: "lifecycle" | "latest-record" | null = lifecycle?.active
     ? "lifecycle"
-    : valid && hookConfigurationCurrent
+    : recordProvesHooks
       ? "latest-record"
       : null;
   const stamp: DeliveryStamp = inspectDeliveryStamp(repo);

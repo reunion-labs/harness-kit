@@ -90,6 +90,18 @@ test("the repository impact map records the 0.7.2 rollout decisions", () => {
   assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /LEGACY_HOOK_FAILURE_MESSAGES/.test(pitfall)));
 });
 
+test("the repository impact map records the 0.8.0 rollout decisions", () => {
+  const manifest = loadManifest(REPO);
+  const module = (name: string) => manifest.modules?.find((item) => item.name === name);
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /CLI 不可用时干净工作区放行.*绝不无限拦截/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /loop-exit/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /普通 sync 不创建首个 AGENTS\.md/.test(pitfall)));
+  assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /worktree 证据/.test(pitfall)));
+  assert.ok(module("planner")?.pitfalls?.some((pitfall) => /HARNESS_COVERED_GLOBS/.test(pitfall)));
+  assert.ok(module("render")?.pitfalls?.some((pitfall) => /词数预算只算仓库内容/.test(pitfall)));
+  assert.ok(module("repository-upgrade")?.pitfalls?.some((pitfall) => /不创建首个 AGENTS\.md/.test(pitfall)));
+});
+
 test("SPEC states the exact declarative enforcement scan semantics", () => {
   const spec = readFileSync(join(REPO, "SPEC-v0.md"), "utf8");
   assert.match(spec, /`forbid_pattern` \/ `forbid_import` 是不带 flag 的 JavaScript `RegExp`，对每个文件\*\*逐行\*\*/);

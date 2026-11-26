@@ -167,7 +167,7 @@ test("sync pins generated entries to the lock version and warns when the running
       appliedMigrations: ["upgrade-state-v1"],
     }) + "\n",
   );
-  const result = spawnSync(TSX, [CLI, "sync", "--repo", repo], { encoding: "utf8" });
+  const result = spawnSync(TSX, [CLI, "sync", "--repo", repo, "--create-entry"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, new RegExp(`WARN running harness-kit ${PACKAGE_VERSION.replace(/\./g, "\\.")} but \\.agents/harness\\.lock\\.json pins 0\\.0\\.1`));
   const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
@@ -243,8 +243,24 @@ test("init reads the package manager and real scripts of a Node repository", () 
   assert.match(npm, /^invariants: \[\]$/m);
 });
 
+test("init says how the first entry is created and leaves no bare command in its scaffold", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-cli-init-next-"));
+  execFileSync("git", ["init", "-q"], { cwd: repo });
+  const result = spawnSync(TSX, [CLI, "init", "--repo", repo, "--name", "next"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /Plain sync does not create the first AGENTS\.md/);
+  assert.match(result.stdout, /sync --create-entry/);
+  assert.match(result.stdout, /prepare-adoption -> blind audit -> sync --adopt-existing/);
+  assert.doesNotMatch(readFileSync(join(repo, ".agents/adoption.md"), "utf8"), /`harness-kit /);
+  const plain = spawnSync(TSX, [CLI, "sync", "--repo", repo], { encoding: "utf8" });
+  assert.equal(plain.status, 1);
+  assert.match(plain.stdout + plain.stderr, /AGENTS\.md does not exist yet/);
+  assert.equal(existsSync(join(repo, "AGENTS.md")), false);
+});
+
 test("init without a known build file declares only the diff check and asks for real commands", () => {
   const { manifest } = initStarter({ "README.md": "# docs only\n" });
   assert.match(manifest, /Starter commands detected from no known build file/);
-  assert.match(manifest, /^capabilities:\n  diff_check: \{ run: "git diff --check \$\{HARNESS_KIT_BASE:-HEAD\}" \}$/m);
+  // git diff never sees untracked files; the starter says so instead of overclaiming.
+  assert.match(manifest, /^capabilities:\n  diff_check: \{ run: "git diff --check \$\{HARNESS_KIT_BASE:-HEAD\}", desc: "[^"]*git add -N" \}$/m);
 });

@@ -1,5 +1,6 @@
 import type { AgentHookStatus } from "./hook-status";
 import type { Manifest } from "./manifest";
+import type { ContextFreshnessIssue } from "./state";
 
 export type VerificationGapClassification = "recommended" | "informational";
 
@@ -201,7 +202,7 @@ function hookActions(hooks: AgentHookStatus, cli: string): HarnessNextAction[] {
       title: "Optional: resolve Hook configuration conflict for session intercept",
       reason:
         "Harness found a Hook file or registration it cannot safely replace: " + unsafe.join("; ") +
-        ". Delivery still works via harness-kit deliver without hooks.",
+        `. Delivery still works via ${cli} deliver without hooks.`,
       commands: [],
       completion:
         "User approves one exact proposed change, or accepts cooperative deliver-only workflow.",
@@ -216,7 +217,7 @@ function hookActions(hooks: AgentHookStatus, cli: string): HarnessNextAction[] {
       when: "harness-maintenance",
       title: "Optional: observe lifecycle Hook on a later Stop",
       reason:
-        `Hooks are configured for ${configured || "the current Agent"} but not yet observed. This does not block delivery — use harness-kit deliver for task acceptance.`,
+        `Hooks are configured for ${configured || "the current Agent"} but not yet observed. This does not block delivery — use ${cli} deliver for task acceptance.`,
       commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "Deliver stamp is valid; hook observation is optional.",
     }];
@@ -230,7 +231,7 @@ function hookActions(hooks: AgentHookStatus, cli: string): HarnessNextAction[] {
       when: "harness-maintenance",
       title: "Optional: install Agent Stop intercept for session-level loops",
       reason:
-        "Without Stop hooks, agents must run harness-kit deliver cooperatively. Install hooks only when the host supports them.",
+        `Without Stop hooks, agents must run ${cli} deliver cooperatively. Install hooks only when the host supports them.`,
       commands: [
         `${cli} deliver --repo .`,
         `${cli} install-hooks --repo . --stop --agents ${configured || "<current-agent>"}`,
@@ -245,7 +246,7 @@ function hookActions(hooks: AgentHookStatus, cli: string): HarnessNextAction[] {
     owner: "agent",
     when: "harness-maintenance",
     title: "Optional: repair Agent lifecycle Hook configuration",
-    reason: "Hook configuration is incomplete or degraded. Delivery still uses harness-kit deliver.",
+    reason: `Hook configuration is incomplete or degraded. Delivery still uses ${cli} deliver.`,
     commands: [
       `${cli} install-hooks --repo . --stop --agents ${configured}`,
       `${cli} deliver --repo .`,
@@ -261,7 +262,7 @@ function evidenceActions(evidence: EvidenceGuidanceInput, cli: string): HarnessN
       priority: "required",
       owner: "agent",
       when: "before-finish",
-      title: "Accept this change with harness-kit deliver",
+      title: "Accept this change with deliver",
       reason: "No delivery stamp exists for the current worktree/session.",
       commands: [`${cli} deliver --repo .`, `${cli} evidence --repo . --json`],
       completion: "deliver reports status=accepted (or no-change) and evidence stamp is valid.",
@@ -304,6 +305,62 @@ function evidenceActions(evidence: EvidenceGuidanceInput, cli: string): HarnessN
     }];
   }
   return [];
+}
+
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_./@:+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** `--path <knowledge.path>` or `--module <name>`, exactly as record-context-review expects it. */
+export function contextReviewSelector(issue: Pick<ContextFreshnessIssue, "kind" | "target">): string {
+  return issue.kind === "knowledge" ? `--path ${shellArg(issue.target)}` : `--module ${shellArg(issue.target)}`;
+}
+
+/** Only a fresh review clears these; source-missing / orphan-review need a manifest fix first. */
+export function reviewClearsIssue(issue: Pick<ContextFreshnessIssue, "code">): boolean {
+  return issue.code !== "source-missing" && issue.code !== "orphan-review";
+}
+
+/**
+ * Required follow-up for blocking context-freshness issues this change owns, so
+ * a failing verify never ends with "nothing required now".
+ */
+export function contextFreshnessActions(issues: readonly ContextFreshnessIssue[], cli: string): HarnessNextAction[] {
+  const blocking = issues.filter((issue) => issue.severity === "blocking" && !issue.inherited);
+  const actions: HarnessNextAction[] = [];
+  const reviewable = blocking.filter(reviewClearsIssue);
+  if (reviewable.length) {
+    const sources = [...new Set(reviewable.flatMap((issue) => issue.changedSources))].sort();
+    actions.push({
+      id: "record-context-reviews",
+      priority: "required",
+      owner: "agent",
+      when: "before-finish",
+      title: `Re-review ${reviewable.length} stale context item(s), then record the review`,
+      reason:
+        `${reviewable.map((issue) => `${issue.key} (${issue.code})`).join(", ")}` +
+        (sources.length ? `; changed sources: ${sources.join(", ")}` : "") +
+        ". Re-read each knowledge document or module card against those sources, fix it in place if it is wrong, and only then record the review.",
+      commands: [
+        `${cli} record-context-review --repo . ${reviewable.map(contextReviewSelector).join(" ")} --reason "<what you re-checked>"`,
+      ],
+      completion: "verify reports no blocking context freshness issue.",
+    });
+  }
+  const declaration = blocking.filter((issue) => !reviewClearsIssue(issue));
+  if (declaration.length) {
+    actions.push({
+      id: "fix-context-declarations",
+      priority: "required",
+      owner: "agent",
+      when: "before-finish",
+      title: `Fix ${declaration.length} context declaration(s) in .agents/manifest.yaml`,
+      reason: declaration.map((issue) => `${issue.key}: ${issue.reason}`).join("; "),
+      commands: [],
+      completion: "binds/entry name existing files (or the retired review is removed deliberately) and verify passes.",
+    });
+  }
+  return actions;
 }
 
 export function buildHarnessGuidance(input: HarnessGuidanceInput): HarnessGuidance {

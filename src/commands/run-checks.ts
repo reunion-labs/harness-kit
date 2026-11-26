@@ -89,17 +89,17 @@ function isWaivableGap(gap: Gap): boolean {
  * HARNESS_KIT_CHANGED_FILES names a file listing changed paths one per line,
  * relative to the target root, deleted paths included.
  */
-function checkEnvironment(changes: ChangeSet, changedFilesPath: string | null): NodeJS.ProcessEnv {
+export function checkEnvironment(changes: ChangeSet | null, changedFilesPath: string | null): NodeJS.ProcessEnv {
   const env = { ...process.env };
   // Never leak an outer run's values into a nested harness-kit invocation.
   delete env.HARNESS_KIT_BASE;
   delete env.HARNESS_KIT_CHANGED_FILES;
-  if (changes.resolvedBase) env.HARNESS_KIT_BASE = changes.resolvedBase;
+  if (changes?.resolvedBase) env.HARNESS_KIT_BASE = changes.resolvedBase;
   if (changedFilesPath) env.HARNESS_KIT_CHANGED_FILES = changedFilesPath;
   return env;
 }
 
-function writeChangedFilesList(files: readonly string[]): { dir: string; path: string } {
+export function writeChangedFilesList(files: readonly string[]): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "harness-kit-checks-"));
   const path = join(dir, "changed-files.txt");
   writeFileSync(path, files.length ? `${files.join("\n")}\n` : "", { mode: 0o600 });

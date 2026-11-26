@@ -78,6 +78,25 @@ export interface PlannedChange {
   layer?: "index" | "worktree" | "untracked";
 }
 
+/**
+ * Paths Harness itself generates, installs, or keeps: `.agents/**` (manifest,
+ * generated maps, lock, review state, adoption evidence, hook runner, contract
+ * baselines, knowledge, check scripts), the generated entries, and the client
+ * hook configs install-hooks writes. `verify`, which deliver always runs,
+ * already judges them, so they never count as unmapped or required-unmapped.
+ * A module may still own them to add its own checks.
+ */
+export const HARNESS_COVERED_GLOBS = [
+  ".agents/**",
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".claude/settings.json",
+  ".cursor/hooks.json",
+  ".codex/hooks.json",
+  ".codex/config.toml",
+] as const;
+const harnessCovered = picomatch([...HARNESS_COVERED_GLOBS], { dot: true });
+
 /** True if any glob in `globs` matches `file`. Empty globs never match. */
 function matchesAny(file: string, globs: string[] | undefined): boolean {
   if (!globs || globs.length === 0) return false;
@@ -155,7 +174,7 @@ export function planChecks(m: Manifest, input: Array<string | PlannedChange>, op
     }
   }
   const affectedGates = compiledGates.filter((item) => affectedGateSet.has(item.id));
-  const unmapped = changed.filter((f) => !matchedFiles.has(f));
+  const unmapped = changed.filter((f) => !matchedFiles.has(f) && !harnessCovered(f));
   const requiredCoverage = m.validation?.required_coverage?.length
     ? picomatch(m.validation.required_coverage, { dot: true })
     : null;

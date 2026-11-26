@@ -94,13 +94,17 @@ const NO_INVARIANTS = `# Add only rules this repository really enforces, e.g.
 invariants: []
 `;
 
+// git diff never sees an untracked file; say so where the command is declared.
+const DIFF_CHECK_DESC = "whitespace errors in tracked changes since the task base; a new file counts once it is staged or added with git add -N";
+
 function manifestTemplate(name: string, starter: Starter): string {
-  const capabilities = [
+  const declared: Array<[string, string, string?]> = [
     ...starter.capabilities,
     // Whitespace errors in the task diff; HARNESS_KIT_BASE is the task base when run-checks runs it.
-    ["diff_check", "git diff --check ${HARNESS_KIT_BASE:-HEAD}"],
-  ]
-    .map(([verb, run]) => `  ${verb}: { run: ${JSON.stringify(run)} }`)
+    ["diff_check", "git diff --check ${HARNESS_KIT_BASE:-HEAD}", DIFF_CHECK_DESC],
+  ];
+  const capabilities = declared
+    .map(([verb, run, desc]) => `  ${verb}: { run: ${JSON.stringify(run)}${desc ? `, desc: ${JSON.stringify(desc)}` : ""} }`)
     .join("\n");
   return `spec: ai-harness/v0
 
@@ -181,7 +185,10 @@ export function initCmd(repo: string, name: string, force: boolean): number {
   for (const path of result.written) ok(`wrote ${path}`);
 
   info(`\nStarter capabilities come from ${starter.detected}; confirm each command before relying on it.`);
-  info(`Next: edit .agents/manifest.yaml, then run \`${repoHarnessInvocation(repo)} sync\`.`);
+  const cli = repoHarnessInvocation(repo);
+  info("Next: fill in .agents/manifest.yaml. Plain sync does not create the first AGENTS.md:");
+  info(`  existing repository: follow \`${cli} onboard\` (prepare-adoption -> blind audit -> sync --adopt-existing)`);
+  info(`  new repository with no agent guidance: \`${cli} sync --create-entry\``);
   return 0;
 }
 
@@ -189,7 +196,7 @@ function adoptionTemplate(): string {
   return `# Tooling adoption log
 
 Earn heavier tooling with evidence. Default posture: prefer the lightest thing that works,
-and only promote a convention to a machine check (\`harness-kit verify\`) after it actually bites.
+and only promote a convention to a machine check (the pinned \`verify\` command in AGENTS.md) after it actually bites.
 
 ## When to promote a soft convention to an enforced invariant
 - The same mistake slipped through 3+ times, OR

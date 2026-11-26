@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { doctorCmd } from "../src/commands/doctor";
+import { loadManifest } from "../src/manifest";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -64,5 +65,14 @@ test("lock-less examples pin every runnable Harness command to the npx @latest f
     assert.match(agents, /`npx -y @erzhe\/harness-kit@latest deliver`/, name);
     // Generator-authored instructions never use a bare harness-kit; declared capabilities render verbatim.
     assert.doesNotMatch(agents, /`harness-kit (deliver|task start|task-start|check-loop)`|Run `harness-kit verify` to check/, name);
+  }
+});
+
+test("examples list every invariant by its manifest id", () => {
+  for (const name of ["cli-tool", "demo-run", "electron-app", "frontend-spa", "npm-lib"]) {
+    const repo = join(ROOT, "examples", name);
+    const agents = readFileSync(join(repo, "AGENTS.md"), "utf8");
+    for (const invariant of loadManifest(repo).invariants ?? [])
+      assert.ok(agents.includes(`- \`${invariant.id}\`: ${invariant.rule} [`), `${name}: ${invariant.id}`);
   }
 });

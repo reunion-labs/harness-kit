@@ -34,9 +34,13 @@ Out of scope (do NOT modify here):
 
 ## Dependencies
 
-Upstream: acme-api（后端 REST 服务）, acme-design-system（npm 组件库）
+Upstream:
+- acme-api（后端 REST 服务）
+- acme-design-system（npm 组件库）
 
-Downstream: 终端用户浏览器, CDN（构建产物托管）
+Downstream:
+- 终端用户浏览器
+- CDN（构建产物托管）
 
 ## Commands
 
@@ -52,9 +56,9 @@ Downstream: 终端用户浏览器, CDN（构建产物托管）
 
 ## Invariants (must hold)
 
-- 禁止在组件里直接 fetch，统一走 src/api/ [enforced]
-- 不得硬编码 API 地址，须读 VITE_API_BASE_URL [enforced]
-- 交互元素需可键盘访问、有 aria 标签 [manual]
+- `no-raw-fetch`: 禁止在组件里直接 fetch，统一走 src/api/ [enforced]
+- `no-hardcoded-api-url`: 不得硬编码 API 地址，须读 VITE_API_BASE_URL [enforced]
+- `a11y-baseline`: 交互元素需可键盘访问、有 aria 标签 [manual]
 
 Run `npx -y @erzhe/harness-kit@latest verify` to check the enforceable ones.
 

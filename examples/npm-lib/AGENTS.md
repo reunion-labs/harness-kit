@@ -32,9 +32,12 @@ Out of scope (do NOT modify here):
 
 ## Dependencies
 
-Upstream: 少量运行时依赖（见 package.json）
+Upstream:
+- 少量运行时依赖（见 package.json）
 
-Downstream: npm registry, 任何引入本库的项目
+Downstream:
+- npm registry
+- 任何引入本库的项目
 
 ## Commands
 
@@ -51,9 +54,9 @@ Downstream: npm registry, 任何引入本库的项目
 
 ## Invariants (must hold)
 
-- 所有公共导出必须经 src/index.ts [enforced]
-- import 时不得有副作用（保证 tree-shaking） [checked]
-- 公共类型不得出现 any [enforced]
+- `exports-from-index`: 所有公共导出必须经 src/index.ts [enforced]
+- `no-side-effects-on-import`: import 时不得有副作用（保证 tree-shaking） [checked]
+- `no-any-in-public-types`: 公共类型不得出现 any [enforced]
 
 Run `npx -y @erzhe/harness-kit@latest verify` to check the enforceable ones.
 

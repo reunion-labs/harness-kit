@@ -31,8 +31,8 @@ Before you finish:
 
 ## Invariants (must hold)
 
-- No stray console.log left in source [enforced]
-- Do not hardcode secrets / tokens in source [enforced]
+- `no-console-log`: No stray console.log left in source [enforced]
+- `no-hardcoded-secret`: Do not hardcode secrets / tokens in source [enforced]
 
 Run `npx -y @erzhe/harness-kit@latest verify` to check the enforceable ones.
 
