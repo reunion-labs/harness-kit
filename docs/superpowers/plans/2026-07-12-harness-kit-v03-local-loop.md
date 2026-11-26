@@ -27,4 +27,4 @@
 - [x] Keep nested instructions and referenced business documents in place; bind copies only inside the external blind-audit bundle.
 - [x] Update examples, fixtures, public docs, CLI contract, and local package version.
 - [x] Run full repository gates and local tarball smoke tests.
-- [x] Run three-role evaluations in isolated Orca worktrees for `opera_ai_server` and `lemon8-ai-gulux`.
+- [x] Run three-role evaluations in isolated Orca worktrees for two downstream repositories (a Go service and a Node.js service).
