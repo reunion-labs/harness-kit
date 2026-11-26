@@ -3,7 +3,8 @@ import pkg from "../../package.json";
 import { harnessInvocation } from "../harness-cli";
 import { doctorCmd } from "./doctor";
 import { verifyCmd } from "./verify";
-import { upgradeRepository, type UpgradeReport } from "../upgrade";
+import { inspectAgentHookStatus } from "../hook-status";
+import { UPGRADE_HOOKS_NOTE, upgradeRepository, type UpgradeReport } from "../upgrade";
 import { err, info, ok, warn } from "../util";
 
 export interface UpgradeCmdOptions {
@@ -80,7 +81,29 @@ function printHumanReport(report: UpgradeReport): void {
   }
   ok(`upgraded repository: ${report.fromVersion ?? "untracked"} -> ${report.toVersion}`);
   for (const path of report.changedFiles) ok(`wrote ${path}`);
+  for (const note of report.notes) if (note !== UPGRADE_HOOKS_NOTE) warn(note);
   info(`Lifecycle hooks were not changed. Manage them explicitly with \`${harnessInvocation(report.toVersion)} install-hooks\`.`);
+}
+
+/**
+ * upgrade never rewrites hooks (they span the repository, Git admin, and user
+ * directories), so installed hooks keep the previous runner pin. Name the exact
+ * refresh instead of leaving doctor to report a DEGRADED runner.
+ */
+function noteHookRefresh(repo: string, report: UpgradeReport): void {
+  if (report.status !== "upgraded") return;
+  let configured: string[] = [];
+  try {
+    configured = inspectAgentHookStatus(repo).configuredAgents;
+  } catch {
+    return;
+  }
+  if (!configured.length) return;
+  report.notes.push(
+    `installed lifecycle hooks still pin the previous runner; refresh them: ` +
+      `${harnessInvocation(report.toVersion)} install-hooks --repo . --stop --agents ${configured.join(",")} ` +
+      "(then deliver, and prove hookActive in a fresh Agent session)",
+  );
 }
 
 export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): number {
@@ -89,6 +112,7 @@ export function upgradeCmd(repo: string, options: UpgradeCmdOptions = {}): numbe
     targetVersion: pkg.version,
     check: options.check,
   });
+  noteHookRefresh(repo, report);
   if (options.json) {
     let code = report.status === "blocked" ? 1 : report.status === "upgrade-available" ? 2 : 0;
     if (!options.check && (report.status === "upgraded" || report.status === "current"))

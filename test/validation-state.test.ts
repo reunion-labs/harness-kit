@@ -148,7 +148,7 @@ modules:
   );
   writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n");
   writeFileSync(join(repo, "test", "a.test.ts"), "// initial\n");
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   execFileSync("git", ["add", "."], { cwd: repo });
   execFileSync("git", ["-c", "user.name=Harness Test", "-c", "user.email=harness@example.test", "commit", "-qm", "initial"], {
     cwd: repo,

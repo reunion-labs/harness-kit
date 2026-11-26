@@ -9,6 +9,7 @@ import {
   inspectContextFreshness,
   readState,
   recordContextReview,
+  recordContextReviews,
   resolveKnowledgePath,
   type ContextFreshnessIssue,
 } from "../src/state";
@@ -243,4 +244,29 @@ test("inheritedContextKeys treats directory knowledge targets by prefix and igno
   const view = { manifest, state: null };
   assert.deepEqual([...inheritedContextKeys([journal, legacy], view, view, ["README.md"])], [journal.key]);
   assert.deepEqual([...inheritedContextKeys([journal], view, view, [".agents/knowledge/journal/2026-01-01-adr.md"])], []);
+});
+
+test("record-context-review accepts the on-disk path and several contexts in one review", () => {
+  const { repo, manifest } = fixture();
+  manifest.modules = [{ name: "api", role: "r", entry: ["src/api.ts"] }];
+  const records = recordContextReviews(repo, manifest, {
+    paths: [".agents/knowledge/policy.md", "./engineering/handbook/api.md"],
+    modules: ["api"],
+    reason: "re-read src/api.ts against both documents and the module card",
+  });
+  assert.deepEqual(records.map((record) => record.key).sort(), [
+    "knowledge:agents:knowledge/policy.md",
+    "knowledge:repo:engineering/handbook/api.md",
+    "module:api",
+  ]);
+  assert.deepEqual(inspectContextFreshness(repo, manifest), []);
+
+  // A wrong name records nothing and says what is reviewable.
+  write(repo, "src/api.ts", "export const route = '/v2/user';\n");
+  assert.throws(
+    () => recordContextReviews(repo, manifest, { paths: ["knowledge/policy.md", "knowledge/nope.md"], reason: "r" }),
+    /manifest 未声明 knowledge path: knowledge\/nope\.md；可复核的 knowledge\.path: engineering\/handbook\/api\.md, knowledge\/policy\.md/,
+  );
+  assert.equal(inspectContextFreshness(repo, manifest).length, 3, "the failed call wrote no review");
+  assert.throws(() => recordContextReviews(repo, manifest, { modules: ["nope"], reason: "r" }), /可复核的 module: api/);
 });

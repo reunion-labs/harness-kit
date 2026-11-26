@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +56,7 @@ ${extraManifest}`,
   write(repo, "src/core.ts", "export const value = 1;\n");
   write(repo, "test/core.test.ts", "// coverage\n");
   setup(repo);
-  syncCmd(repo);
+  syncCmd(repo, { createEntry: true });
   commit(repo, "initial");
   return repo;
 }
@@ -366,7 +366,7 @@ modules:
     );
     write(root, "packages/app/src/app.ts", "export const app = 1;\n");
     write(root, "packages/app/test/app.test.ts", "// app coverage\n");
-    syncCmd(join(root, "packages/app"));
+    syncCmd(join(root, "packages/app"), { createEntry: true });
   });
   // The root target has an accepted stamp of its own.
   write(repo, "src/core.ts", "export const value = 2;\n");
@@ -392,4 +392,47 @@ test("evidence text always closes with the hook proof line, also without any hoo
   assert.match(text, /stamp source: deliver\/manual — this record is not hook proof; see "hook proof" below/);
   assert.match(text, /session intercept: none/);
   assert.match(text, /hook proof \(hookActive\): no/);
+});
+
+test("deliver names the review its own stale context needs, not only re-run deliver", () => {
+  const repo = staleBaseFixture();
+  startTaskRecord({ repo });
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  const { json } = captureJson(() => deliverCmd(repo, { json: true }));
+  assert.equal(json.status, "needs-work");
+  const review = json.nextActions.find((action: any) => action.id === "record-context-reviews");
+  assert.equal(review.priority, "required");
+  assert.deepEqual(review.commands, [
+    'npx -y @erzhe/harness-kit@1.2.3 record-context-review --repo . --path knowledge/core.md --reason "<what you re-checked>"',
+  ]);
+  assert.ok(json.next.some((step: string) => /record-context-review --repo \. --path knowledge\/core\.md/.test(step)), json.next.join("\n"));
+  // The inherited item stays maintenance, outside the required review.
+  assert.doesNotMatch(review.commands[0], /policy/);
+});
+
+test("deliver shows where its task record came from and warns when it may belong to an earlier task", () => {
+  const repo = fixture();
+  const record = startTaskRecord({ repo, note: "probe from another session" });
+  write(repo, "src/core.ts", "export const value = 2;\n");
+  write(repo, "test/core.test.ts", "// covers 2\n");
+  let { json } = captureJson(() => deliverCmd(repo, { json: true }));
+  assert.equal(json.scope, "task");
+  assert.equal(json.task.baseSha, record.baseSha);
+  assert.equal(json.task.note, "probe from another session");
+  assert.deepEqual(json.taskWarnings, []);
+
+  // An old record whose base is off the current branch.
+  const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: repo, encoding: "utf8" }).trim();
+  const old = { ...readTaskRecord(repo)!, createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString() };
+  execFileSync("git", ["checkout", "-q", "--orphan", "other"], { cwd: repo });
+  commit(repo, "unrelated root");
+  const dir = join(gitDir, "harness-kit", "task");
+  const [name] = readdirSync(dir).filter((file: string) => file.startsWith("current-"));
+  writeFileSync(join(dir, name!), JSON.stringify(old));
+  ({ json } = captureJson(() => deliverCmd(repo, { json: true })));
+  assert.equal(json.taskWarnings.length, 2, JSON.stringify(json.taskWarnings));
+  assert.match(json.taskWarnings[0], /task record is 10 day\(s\) old/);
+  assert.match(json.taskWarnings[1], /is not an ancestor of HEAD/);
+  assert.match(json.taskWarnings[1], /task-start --repo \. first/);
 });

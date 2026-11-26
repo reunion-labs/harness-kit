@@ -211,7 +211,7 @@ function installGitHooks(repo: string, force: boolean, allowSharedGitHooks: bool
 
   info(`\nGit hooks written to ${scope.hooksDir}`);
   info("pre-commit: regenerates agent files from the manifest and stages them.");
-  info("pre-push:   runs `harness-kit verify` and blocks on drift (bypass: git push --no-verify).");
+  info(`pre-push:   runs the pinned \`npx -y @erzhe/harness-kit@${pkg.version} verify\` and blocks on drift (bypass: git push --no-verify).`);
   info("override the CLI it calls with env HARNESS_KIT_CMD (e.g. for local dev).");
   return 0;
 }

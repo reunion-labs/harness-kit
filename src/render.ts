@@ -27,74 +27,78 @@ export function renderTargets(m: Manifest, opts: RenderOptions = {}): Array<[str
   return targets;
 }
 
-export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
+/** AGENTS.md lines, each marked as fixed Harness text or repository content from the manifest. */
+function agentsMdLines(m: Manifest, opts: RenderOptions): Array<{ text: string; fixed: boolean }> {
   const id = m.identity;
   // The package is distributed through npx, so a bare `harness-kit` is usually
   // not on PATH (exit 127). Every runnable instruction uses the pinned form.
   const hk = harnessInvocation(opts.harnessVersion);
-  const L: string[] = [];
-  L.push(GEN_HEADER(), "");
-  L.push(`# ${id.name}`, "");
-  if (id.summary) L.push(id.summary, "");
+  const out: Array<{ text: string; fixed: boolean }> = [];
+  const content = { push: (...lines: string[]) => out.push(...lines.map((text) => ({ text, fixed: false }))) };
+  const fixed = { push: (...lines: string[]) => out.push(...lines.map((text) => ({ text, fixed: true }))) };
+  fixed.push(GEN_HEADER(), "");
+  content.push(`# ${id.name}`, "");
+  if (id.summary) content.push(id.summary, "");
 
-  L.push("## Working agreement (read first)", "");
-  L.push(
+  fixed.push("## Working agreement (read first)", "");
+  fixed.push(
     `Harness CLI: \`${hk} <command>\` ` +
       (opts.harnessVersion
         ? `(pinned by \`${HARNESS_LOCK_REL}\`; no global install).`
         : `(no global install; no \`${HARNESS_LOCK_REL}\` version pin yet).`),
     "",
   );
-  L.push(
+  fixed.push(
     "Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` " +
       "(plus `.agents/routing.md` / `.agents/modules.md` when declared). " +
       `Edit the manifest, then run \`${hk} sync\`. Knowledge is hand-authored; \`.agents/hooks/\` belongs to \`install-hooks\`.`,
     "",
   );
   const hasImpactMap = (m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || !!m.validation;
-  L.push("Before you touch code:");
-  L.push("1. Post a **Task Brief**: what changes, change-type, files/layers touched, how you'll verify.");
+  fixed.push("Before you touch code:");
+  fixed.push("1. Post a **Task Brief**: what changes, change-type, files/layers touched, how you'll verify.");
   if (m.routing?.length)
-    L.push("2. Find your change-type in `.agents/routing.md` and read the files it points to; do NOT full-repo grep and guess.");
-  else L.push("2. Read the relevant files before editing; do NOT full-repo grep and guess.");
+    fixed.push("2. Find your change-type in `.agents/routing.md` and read the files it points to; do NOT full-repo grep and guess.");
+  else fixed.push("2. Read the relevant files before editing; do NOT full-repo grep and guess.");
   if (hasImpactMap)
-    L.push(
+    fixed.push(
       `   Prefer \`${hk} task-start\` before editing so later commits stay in deliver scope (without it, deliver uses the worktree diff vs HEAD).`,
     );
-  L.push("");
-  L.push("Before you finish:");
+  fixed.push("");
+  fixed.push("Before you finish:");
   if (hasImpactMap) {
-    L.push(
+    fixed.push(
       `3. Run \`${hk} deliver\` (checks + verify + stamp). Only \`status=accepted\` (or clean \`no-change\`) means done; on \`needs-work\`, fix and re-run.`,
     );
   } else {
-    L.push(`3. Run \`${hk} deliver\` (or at least \`${hk} verify\`). Do not claim completion without a passing stamp/verify.`);
+    fixed.push(`3. Run \`${hk} deliver\` (or at least \`${hk} verify\`). Do not claim completion without a passing stamp/verify.`);
   }
-  L.push(
+  fixed.push(
     "4. In `NEXT ACTIONS` / `nextActions`: do every `required | agent` action yourself; ask the user only for `required | human`; defer `recommended` during unrelated work.",
   );
-  L.push(
+  fixed.push(
     "5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention them only when relevant.",
   );
-  L.push(
+  fixed.push(
     "6. Record what code can't tell an agent (gotcha, decision, fix): update the registered knowledge source in place, " +
       "or add to `.agents/knowledge/` (journal ADR for decisions). Never move/copy existing repo docs to fit a folder; skip one-off noise.",
   );
-  L.push("");
+  fixed.push("");
 
   if (id.scope_in?.length || id.scope_out?.length) {
-    L.push("## Scope");
-    if (id.scope_in?.length) L.push("", "In scope:", ...id.scope_in.map((s) => `- ${safeStr(s)}`));
+    content.push("## Scope");
+    if (id.scope_in?.length) content.push("", "In scope:", ...id.scope_in.map((s) => `- ${safeStr(s)}`));
     if (id.scope_out?.length)
-      L.push("", "Out of scope (do NOT modify here):", ...id.scope_out.map((s) => `- ${safeStr(s)}`));
-    L.push("");
+      content.push("", "Out of scope (do NOT modify here):", ...id.scope_out.map((s) => `- ${safeStr(s)}`));
+    content.push("");
   }
 
+  // One item per line: an item may itself contain commas or semicolons.
   if (id.upstream?.length || id.downstream?.length) {
-    L.push("## Dependencies");
-    if (id.upstream?.length) L.push("", `Upstream: ${id.upstream.map(safeStr).join(", ")}`);
-    if (id.downstream?.length) L.push("", `Downstream: ${id.downstream.map(safeStr).join(", ")}`);
-    L.push("");
+    content.push("## Dependencies");
+    if (id.upstream?.length) content.push("", "Upstream:", ...id.upstream.map((s) => `- ${safeStr(s)}`));
+    if (id.downstream?.length) content.push("", "Downstream:", ...id.downstream.map((s) => `- ${safeStr(s)}`));
+    content.push("");
   }
 
   const allCaps = Object.entries(m.capabilities ?? {});
@@ -104,49 +108,82 @@ export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
     hasExplicitBootstrap ? capability.bootstrap === true : defaultBootstrap.has(verb),
   );
   if (caps.length) {
-    L.push("## Commands", "");
+    content.push("## Commands", "");
     for (const [verb, c] of caps) {
       const tags = [c.background ? "(long-running)" : "", c.mutating ? "(mutating — confirm first)" : ""]
         .filter(Boolean)
         .join(" ");
-      L.push(`- \`${verb}\`: \`${c.run}\`${c.desc ? ` — ${c.desc}` : ""}${tags ? " " + tags : ""}`);
-      if (c.example) L.push(`  - example: \`${c.example}\``);
+      content.push(`- \`${verb}\`: \`${c.run}\`${c.desc ? ` — ${c.desc}` : ""}${tags ? " " + tags : ""}`);
+      if (c.example) content.push(`  - example: \`${c.example}\``);
     }
-    L.push("");
+    content.push("");
   }
 
   if (m.contracts?.length) {
     // Not every repository versions its interfaces; breaking_needs says what a break requires.
-    L.push("## Contracts (never break silently)", "");
+    content.push("## Contracts (never break silently)", "");
     for (const c of m.contracts) {
-      L.push(`- ${c.id} [${c.kind}]${c.breaking_needs ? ` (breaking -> ${c.breaking_needs})` : ""}: ${c.desc}`);
+      content.push(`- ${c.id} [${c.kind}]${c.breaking_needs ? ` (breaking -> ${c.breaking_needs})` : ""}: ${c.desc}`);
     }
-    L.push("");
+    content.push("");
   }
 
   if (m.invariants?.length) {
-    L.push("## Invariants (must hold)", "");
+    content.push("## Invariants (must hold)", "");
+    // The id is how scope, routing, and module cards refer to a rule.
     for (const inv of m.invariants) {
       const how = inv.enforcement ? "enforced" : inv.check ? "checked" : "manual";
-      L.push(`- ${inv.rule} [${how}]`);
+      content.push(`- \`${inv.id}\`: ${inv.rule} [${how}]`);
     }
-    L.push("", `Run \`${hk} verify\` to check the enforceable ones.`, "");
+    content.push("");
+    fixed.push(`Run \`${hk} verify\` to check the enforceable ones.`, "");
   }
 
-  L.push("## Knowledge & maps (load on demand)", "");
+  fixed.push("## Knowledge & maps (load on demand)", "");
   if (!(m.knowledge?.length) || m.knowledge.some((knowledge) => (knowledge.root ?? "agents") === "agents"))
-    L.push("- Harness-owned domain / conventions / decisions: `.agents/knowledge/`");
+    fixed.push("- Harness-owned domain / conventions / decisions: `.agents/knowledge/`");
   if (m.knowledge?.some((knowledge) => knowledge.root === "repo"))
-    L.push("- Existing repository documents stay in place; use their exact paths from `.agents/reference.md`");
+    fixed.push("- Existing repository documents stay in place; use their exact paths from `.agents/reference.md`");
   if (allCaps.length || m.environment?.length || m.knowledge?.length)
-    L.push("- Full commands, environment, and registered knowledge catalog: `.agents/reference.md`");
-  if (m.routing?.length) L.push("- Change-type routing (read before editing): `.agents/routing.md`");
-  if (m.modules?.length) L.push("- Module map + common pitfalls: `.agents/modules.md`");
-  if (hasImpactMap) L.push(`- Implement -> verify loop (deep guide): run \`${hk} check-loop\``);
-  L.push("- Tooling adoption log (earn heavier tooling): `.agents/adoption.md`");
-  if (m.playbooks?.dir) L.push(`- Task playbooks: \`.agents/${m.playbooks.dir}\``);
-  L.push("");
-  return L.join("\n");
+    fixed.push("- Full commands, environment, and registered knowledge catalog: `.agents/reference.md`");
+  if (m.routing?.length) fixed.push("- Change-type routing (read before editing): `.agents/routing.md`");
+  if (m.modules?.length) fixed.push("- Module map + common pitfalls: `.agents/modules.md`");
+  if (hasImpactMap) fixed.push(`- Implement -> verify loop (deep guide): run \`${hk} check-loop\``);
+  fixed.push("- Tooling adoption log (earn heavier tooling): `.agents/adoption.md`");
+  if (m.playbooks?.dir) fixed.push(`- Task playbooks: \`.agents/${m.playbooks.dir}\``);
+  fixed.push("");
+  return out;
+}
+
+export function renderAgentsMd(m: Manifest, opts: RenderOptions = {}): string {
+  return agentsMdLines(m, opts).map((line) => line.text).join("\n");
+}
+
+// A space next to CJK text is optional typography; it must not change the count.
+const CJK = String.raw`[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]`;
+const CJK_SPACING = new RegExp(String.raw`\s+(?=${CJK})|(?<=${CJK})\s+`, "gu");
+
+/** Whitespace-separated words, ignoring spacing between CJK and other text. */
+export function countWords(text: string): number {
+  const normalized = text.replace(CJK_SPACING, "").trim();
+  return normalized ? normalized.split(/\s+/).length : 0;
+}
+
+export interface AgentsMdSize {
+  lines: number;
+  words: number;
+  /** Words the repository controls: everything except the fixed Harness working agreement, header, and map. */
+  contentWords: number;
+}
+
+export function agentsMdSize(m: Manifest, opts: RenderOptions = {}): AgentsMdSize {
+  const lines = agentsMdLines(m, opts);
+  const text = lines.map((line) => line.text).join("\n");
+  return {
+    lines: text.split("\n").length,
+    words: countWords(text),
+    contentWords: countWords(lines.filter((line) => !line.fixed).map((line) => line.text).join("\n")),
+  };
 }
 
 /** Full catalog kept out of the bootstrap budget. */
@@ -223,8 +260,8 @@ export function renderModulesMd(m: Manifest): string {
     if (mod.gates?.length) L.push(`- Validation gates: ${mod.gates.map((s) => `\`${safeStr(s)}\``).join(", ")}`);
     if (mod.test_touch) L.push(`- Test touch: \`${safeStr(mod.test_touch)}\``);
     if (mod.playbook) L.push(`- Playbook: \`${safeStr(mod.playbook)}\``);
-    if (mod.upstream?.length) L.push(`- Upstream: ${mod.upstream.map(safeStr).join(", ")}`);
-    if (mod.downstream?.length) L.push(`- Downstream: ${mod.downstream.map(safeStr).join(", ")}`);
+    if (mod.upstream?.length) L.push("- Upstream:", ...mod.upstream.map((s) => `  - ${safeStr(s)}`));
+    if (mod.downstream?.length) L.push("- Downstream:", ...mod.downstream.map((s) => `  - ${safeStr(s)}`));
     if (mod.must_know?.length) for (const k of mod.must_know) L.push(`- Must know: ${safeStr(k)}`);
     if (mod.pitfalls?.length) for (const p of mod.pitfalls) L.push(`- Pitfall: ${safeStr(p)}`);
     L.push("");

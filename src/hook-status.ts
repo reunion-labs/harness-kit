@@ -3,15 +3,24 @@ import { join } from "node:path";
 import { inspectCodexLinkedHooks, isLinkedGitWorktree } from "./codex-linked-hooks";
 import { gitAdminDir } from "./git";
 import { inspectManagedFiles } from "./managed-files";
-import { inspectValidationEvidenceFreshness, readLatestHookValidationSession } from "./validation-state";
+import { readLatestHookValidationSession, type ValidationEvidence } from "./validation-state";
+import pkg from "../package.json";
 import { sha256 } from "./util";
 import {
+  AGENT_HOOK_RUNNER_MARK,
   installedAgentHookRunnerScript,
   isInstalledAgentHookCommand,
   type AgentTool,
 } from "./commands/stop-hooks";
 
 export type AgentHookState = "configured" | "active" | "degraded";
+
+/** Lifecycle gate evidence that passed run-checks and verify when the Stop accepted it. */
+export function lifecycleEvidencePassed(evidence: ValidationEvidence): boolean {
+  const runChecksOk =
+    evidence.runChecksStatus !== undefined ? evidence.runChecksStatus !== "not-verified" : evidence.ok && evidence.status !== "not-verified";
+  return runChecksOk && evidence.verifyPassed === true;
+}
 
 export interface AgentHookStatus {
   state: AgentHookState;
@@ -22,6 +31,8 @@ export interface AgentHookStatus {
 }
 
 const RUNNER_REL = ".agents/hooks/harness-agent-hook.sh";
+const RUNNER_PIN = /npx (?:--prefer-offline )?-y @erzhe\/harness-kit@([0-9A-Za-z.+-]+) hook-event/;
+const RUNNER_OUTDATED = "is a managed runner pinned to";
 const COMMAND_MARK = "harness-agent-hook.sh";
 const CODEX_LINKED_REGISTRATION_REL = "harness-kit/codex-linked-dispatch-v1.json";
 
@@ -164,7 +175,14 @@ function runnerReady(repo: string, issues: string[]): boolean {
     const withoutOptionalFinalNewline = (value: string): string => value.endsWith("\n") ? value.slice(0, -1) : value;
     const ready = stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o100) !== 0 &&
       withoutOptionalFinalNewline(inspected.content) === withoutOptionalFinalNewline(installedAgentHookRunnerScript());
-    if (!ready) issues.push(`${RUNNER_REL} is not a managed executable runner`);
+    if (!ready) {
+      // `upgrade` never touches hooks, so an older managed runner is the normal
+      // state right after an upgrade, not a damaged file.
+      const pinned = inspected.content.includes(AGENT_HOOK_RUNNER_MARK) ? inspected.content.match(RUNNER_PIN)?.[1] : undefined;
+      if (pinned && pinned !== pkg.version)
+        issues.push(`${RUNNER_REL} ${RUNNER_OUTDATED} @erzhe/harness-kit@${pinned} (running ${pkg.version}); re-run install-hooks to update it`);
+      else issues.push(`${RUNNER_REL} is not a managed executable runner`);
+    }
     return !!ready;
   } catch {
     issues.push(`${RUNNER_REL} runner is missing`);
@@ -260,20 +278,22 @@ export function inspectAgentHookStatus(repo: string): AgentHookStatus {
       evidenceAt = session.lastStop.at;
       evidenceInvalid = true;
       issues.push(`latest lifecycle evidence: ${session.agent} Stop blocked (${session.lastStop.reason}); run deliver, then finish the turn again`);
+    } else if (session && session.agent !== "manual" && !evidence && session.lastStop?.reason === "loop-exit") {
+      evidenceAgent = session.agent;
+      evidenceAt = session.lastStop.at;
+      evidenceInvalid = true;
+      issues.push(
+        `latest lifecycle evidence: ${session.agent} Stop ended without verified delivery (loop-exit after a block); deliver, then finish a turn again`,
+      );
     } else if (session && session.agent !== "manual" && evidence) {
       evidenceAgent = session.agent;
       evidenceAt = evidence.createdAt;
-      const freshness = inspectValidationEvidenceFreshness(repo, evidence);
-      if (freshness.error) issues.push(`cannot refresh lifecycle evidence: ${freshness.error}`);
-      const stale = freshness.stale;
-      const runChecksValid =
-        (evidence.runChecksStatus !== undefined
-          ? evidence.runChecksStatus !== "not-verified"
-          : evidence.ok && evidence.status !== "not-verified") && !stale;
-      const valid = runChecksValid && evidence.verifyPassed === true;
-      if (!valid) {
+      // The proof is that the hook ran and accepted verified gate evidence under
+      // this configuration. Later edits make that evidence older, not the hook
+      // broken; the next Stop judges the new change on its own.
+      if (!lifecycleEvidencePassed(evidence)) {
         evidenceInvalid = true;
-        issues.push(stale ? "latest lifecycle evidence is stale" : "latest lifecycle evidence did not pass both gates");
+        issues.push("latest lifecycle evidence did not pass both gates");
       } else if (!configuredAgents.includes(session.agent)) {
         evidenceInvalid = true;
         issues.push(`latest lifecycle evidence came from ${session.agent}, but that project hook is no longer configured`);
@@ -297,6 +317,7 @@ export function inspectAgentHookStatus(repo: string): AgentHookStatus {
     issue.includes("is missing while") ||
     issue.includes("not a safe project-local regular file") ||
     issue.includes("not a managed executable") ||
+    issue.includes(RUNNER_OUTDATED) ||
     issue.includes("runner is missing") ||
     issue.includes("Codex linked") ||
     issue.includes("Codex user hooks.json") ||

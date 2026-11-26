@@ -254,6 +254,20 @@ export function collectChanges(repoInput: string, base = "HEAD", opts: CollectCh
   };
 }
 
+/** True when `ancestor` is reachable from `descendant`; false when it is not. Git failures throw. */
+export function isAncestorCommit(repo: string, ancestor: string, descendant: string): boolean {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant], {
+      cwd: repo,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    return true;
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return false;
+    throw new GitDiffError("diff-failed", `git merge-base failed: ${errorText(error)}`);
+  }
+}
+
 /** Compatibility helper for callers that only need paths. */
 export function changedFiles(repo: string, base = "HEAD"): string[] {
   return collectChanges(repo, base).files;

@@ -62,9 +62,10 @@ export interface StopObservation {
   /**
    * clean: nothing changed since the session base; stamp: a matching accepted
    * deliver stamp covered the change; checks: execute mode ran run-checks + verify;
-   * no-stamp / scope-error: thin Stop blocked.
+   * no-stamp / scope-error: thin Stop blocked; loop-exit: the client re-ran Stop
+   * right after a block with the change unchanged, so it was allowed unverified.
    */
-  reason: "clean" | "stamp" | "checks" | "no-stamp" | "scope-error";
+  reason: "clean" | "stamp" | "checks" | "no-stamp" | "scope-error" | "loop-exit";
   fingerprint?: string;
 }
 
@@ -320,6 +321,52 @@ export function recordStopObservation(
   else if (evidence) next.lastEvidence = evidence;
   writePrivateJson(sessionPath(repo, token), next);
   return true;
+}
+
+const STOP_GUARD_RX = /^stop-guard-([a-f0-9]{64})\.json$/;
+const STOP_GUARD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function stopGuardPath(repo: string, token: string): string {
+  if (!TOKEN_RX.test(token)) throw new Error("invalid validation session token");
+  return join(stateDir(repo), `stop-guard-${token}.json`);
+}
+
+/**
+ * Change fingerprint of the last Stop this client session blocked, or null.
+ * Kept apart from the SessionStart session, which a Stop without SessionStart
+ * (hooks loaded mid-session) does not have.
+ */
+export function readStopGuard(repo: string, token: string): string | null {
+  const path = stopGuardPath(repo, token);
+  try {
+    if (Date.now() - statSync(path).mtimeMs > STOP_GUARD_MAX_AGE_MS) return null;
+  } catch {
+    return null;
+  }
+  const value = readJson<{ fingerprint?: unknown }>(path);
+  return typeof value?.fingerprint === "string" ? value.fingerprint : null;
+}
+
+export function writeStopGuard(repo: string, token: string, fingerprint: string): void {
+  writePrivateJson(stopGuardPath(repo, token), { fingerprint, at: new Date().toISOString() });
+  try {
+    const now = Date.now();
+    for (const name of readdirSync(stateDir(repo))) {
+      if (!STOP_GUARD_RX.test(name)) continue;
+      const path = join(stateDir(repo), name);
+      if (now - statSync(path).mtimeMs > STOP_GUARD_MAX_AGE_MS) unlinkSync(path);
+    }
+  } catch {
+    // Best-effort cleanup must never change a Stop decision.
+  }
+}
+
+export function clearStopGuard(repo: string, token: string): void {
+  try {
+    unlinkSync(stopGuardPath(repo, token));
+  } catch {
+    // Nothing was blocked for this session.
+  }
 }
 
 export interface ValidationEvidenceFreshness {

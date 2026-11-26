@@ -144,6 +144,8 @@ modules:
       - AGENTS.md 要保持精简，别把 routing/modules 全文塞进去
       - sync / verify / doctor / adoption 必须用同一个 lock 版本渲染，upgrade 用目标版本渲染，否则入口会被判为漂移
       - 固定 Working agreement 控制在 240 词内（有测试）；GEN_HEADER 不写版本也不写裸命令，改它时旧 CLAUDE.md stub 靠 isHarnessGenerated 的精确 stub 识别才能继续被刷新
+      - 词数预算只算仓库内容：agentsMdLines 把固定文本标成 fixed，新增固定文案必须走 fixed.push；countWords 不把 CJK 旁的空格算成词
+      - 不变量渲染带 id（scope / routing / 模块卡按 id 引用）；上下游逐条一行，条目里可能有逗号、分号
   - name: enforce
     role: 声明式不变量执行（确定性，无 LLM）
     entry: ["src/enforce.ts"]
@@ -161,6 +163,7 @@ modules:
     test_touch: required
     pitfalls:
       - 保持纯函数：不碰 git / fs / 进程，只做 glob 匹配，方便单测
+      - HARNESS_COVERED_GLOBS（.agents/**、生成入口、install-hooks 写的客户端配置）由 verify 判定，不算 unmapped / required-unmapped；模块仍可 owns 它们来加检查
   - name: git-diff
     role: 安全收集 committed / staged / unstaged / untracked 改动并生成指纹
     entry: ["src/git.ts"]
@@ -189,6 +192,8 @@ modules:
       - evidence 的 hookActive / lifecycle 默认看最近的 lifecycle 会话而不是 latest 指针；显式 --session 只看该会话
       - SessionStart 新建会话不得移动 manual latest 指针，否则会话前仍覆盖当前改动的 deliver 戳会被藏掉
       - check 进程的 HARNESS_KIT_BASE / HARNESS_KIT_CHANGED_FILES 由 run-checks 注入，外层同名变量必须先清掉
+      - lifecycle.active 只要求配置未变且门禁证据当时通过（evidencePassed）；证据过期（evidenceCurrent=false）不让 hook 状态 DEGRADED
+      - evidence 顶层 session/agent 描述最近记录（record.kind），hookConfigurationCurrent 跟随 hook 证明来源，不能在 lifecycle 当前时报 false
   - name: delivery
     role: 任务 scope 解析、deliver 编排与 delivery stamp
     entry: ["src/delivery.ts", "src/commands/deliver.ts"]
@@ -203,6 +208,7 @@ modules:
       - 继承的 context 过期只在本任务没碰它的输入（binds/entry、知识文档、manifest 声明、state 复核记录）时降为 maintenance；独立 verify 仍严格
       - 目录没有 manifest 时先找祖先和嵌套 target：祖先存在就要求到 target 根重跑，否则 not-adopted（exit 3），不写任何证据
       - stamp 按 target 读取（inspectDeliveryStamp / coveringStampEvidence 不能用 gitRoot），否则嵌套 target 读到外层 target 的戳
+      - task 记录会跨会话留在 Git admin dir；deliver 必须报告它的来源，并在超过 7 天或 base 不是 HEAD 祖先时警告
   - name: agent-hooks
     role: Claude Code / Cursor / Codex 的 SessionStart + Stop 生命周期门禁
     entry: ["src/commands/hook-event.ts"]
@@ -227,6 +233,8 @@ modules:
       - 用户分发器登记必须最后写入；ACTIVE 指纹只绑定 Harness managed 用户入口，不得被无关第三方用户 Hook 变化污染
       - Hook 失败兜底文案不写裸 harness-kit；改兜底文案时把旧文案加进 LEGACY_HOOK_FAILURE_MESSAGES，否则已装配置会被当成第三方条目而重复安装
       - Stop 拦截文案写被门禁 target 的绝对 --repo，不能写 --repo .
+      - runner 先读完 stdin 再转给 CLI；CLI 不可用时干净工作区放行，脏工作区每轮只拦一次（stop_hook_active / loop_count 即放行），绝不无限拦截
+      - CLI 侧 loop-exit 只在 continuing 且 stop-guard 指纹与上次拦截相同时放行，记 lifecycle reason=loop-exit，永远不算门禁证据
   - name: managed-generation
     role: 生成文件接管、软链接边界与事务写入
     entry: ["src/managed-files.ts"]
@@ -241,7 +249,9 @@ modules:
       - guidance 普通文件必须走仓库范围的 O_NOFOLLOW + inode 绑定读取；不能 lstat 后直接按路径 read 留软链接替换窗口
       - declared/unverified 不能命名成 verified；本地 hash 没有外部身份信任根
       - sync 不得写 .agents/.harness-state.json；语义新鲜度只由 record-context-review 推进
-      - candidate 必须绑定 landing 落点（.agents 下手写文件 + root=repo knowledge）；只排除 manifest、生成入口、adoption/、hooks/、state、lock 这些已另行绑定或属于机器状态的文件
+      - candidate 必须绑定 landing 落点（.agents 下手写文件、lock、复核 state + root=repo knowledge）；只排除 manifest、生成入口、adoption/、hooks/；.agents 外的接入改动进 worktree 证据，INDEX.md 也进 hash
+      - 普通 sync 不创建首个 AGENTS.md：要么 --adopt-existing + pass 回执，要么 --create-entry 且仓内没有任何 agent 指引（含其他客户端规则文件）
+      - 其他客户端的规则文件（.cursor/rules、copilot-instructions 等）是 guidance 根，只进 bundle，不做 legacy 快照；纯路径提及以非 ASCII 路径字符为边界，未解析的域名形提及丢弃
       - 引用闭包只把找不到仓内文件的纯路径提及降级为 unresolved（进 candidate hash、apply 时重比）；链接 / @import 缺失或在仓外、以及存在但不安全的目标仍 fail closed
       - 生成物判定统一走 isHarnessGenerated（生成标记开头或精确 CLAUDE.md stub），不要再各处写 startsWith(marker)
       - sync --adopt-existing 必须带 candidate+audit，只要会写入就核对回执，没有 legacy 入口也一样；只有纯 no-op 跳过
@@ -257,7 +267,8 @@ modules:
       - 运行中的 CLI 版本就是目标版本；core 不能访问 registry、CI 或代码托管 API
       - apply 必须拒绝 dirty 仓库，并把 manifest、生成入口和 lock 放入同一次 managed-file 事务
       - 只解析而没有迁移时必须保留 manifest 原始字节，不能顺手格式化
-      - Hook 不属于仓内原子事务；当前 upgrade 不得安装、卸载或刷新 Hook
+      - Hook 不属于仓内原子事务；当前 upgrade 不得安装、卸载或刷新 Hook，但装了 Hook 时要在 notes 给出精确的 install-hooks 命令
+      - upgrade 只刷新已有入口，不创建首个 AGENTS.md（那是接入盲审的终点）
       - lock 版本会进入 Agent 复制执行的命令，只接受纯 semver，其余一律回退 @latest
   - name: context-freshness
     role: 任意 repo 文档登记、authority 语义与 Agent review evidence
@@ -271,6 +282,7 @@ modules:
       - authority=derived/policy/review 都要求显式 Agent 复核；hash 只能证明之后没变，不能证明分析质量
       - 删除 binds、切换 authority 或绑定源缺失都必须让旧 review 失效，不能靠旧 hash 继续显示 current
       - inheritedContextKeys 拿不准就保持 task-scoped：base 没有 manifest、读 base 失败、声明或复核记录有任何差异都不算继承
+      - record-context-review 接受仓库相对写法并可重复多选；全部解析成功才一次写入，失败时列出可复核的条目
   - name: core-gates
     role: init/sync/doctor/verify/contract/enforcement 的通用基础
     entry: ["src/commands/verify.ts"]
@@ -283,6 +295,7 @@ modules:
       - verify --json 对 repo-controlled matcher/文件系统异常也必须只输出一份结构化失败报告
       - accept-contract 必须先校验 manifest，基线只能写 .agents/contracts 的安全普通文件
       - doctor 的影响面 glob 检查用 planner 同款 picomatch（含点目录）逐个求值，owns 与 tests 的单个 glob 零命中都要报
+      - verify 给 invariant / contract 的 check 注入任务 diff（snapshot 不注入）；verify 失败时 nextActions 必须有 required 项，不能显示 nothing required
   - name: bundled-skills
     role: onboard / check-loop 技能的定位、输出与维护
     entry: ["src/skill.ts"]

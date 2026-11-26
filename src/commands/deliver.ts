@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { collectChanges } from "../git";
+import { collectChanges, isAncestorCommit } from "../git";
 import {
   inspectDeliveryStamp,
   locateHarnessTargets,
@@ -7,8 +7,9 @@ import {
   type ChangeScope,
   type DeliveryStamp,
   type HarnessTargetLookup,
+  type TaskRecord,
 } from "../delivery";
-import type { HarnessNextAction } from "../guidance";
+import { contextFreshnessActions, contextReviewSelector, reviewClearsIssue, type HarnessNextAction } from "../guidance";
 import { repoHarnessInvocation } from "../harness-cli";
 import type { ContextFreshnessIssue } from "../state";
 import { err, info, ok, warn } from "../util";
@@ -34,6 +35,10 @@ export interface DeliverReport {
   adopted: boolean;
   scope: ChangeScope["kind"];
   base: string;
+  /** The worktree task record behind scope=task (or kept beside --base), so an old record is visible. */
+  task?: TaskRecord | null;
+  /** Reasons the task record may belong to an earlier task. */
+  taskWarnings?: string[];
   fingerprint: string;
   changed: string[];
   runChecks?: RunChecksReport | null;
@@ -87,9 +92,16 @@ function shellArg(value: string): string {
   return /^[A-Za-z0-9_./@:+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function nextActions(status: DeliverStatus, report: RunChecksReport | null, cli: string): string[] {
+function nextActions(status: DeliverStatus, report: RunChecksReport | null, cli: string, context: ContextFreshnessIssue[]): string[] {
   if (status === "accepted" || status === "no-change") return [];
   const next: string[] = [];
+  const stale = context.filter((issue) => issue.severity === "blocking" && !issue.inherited);
+  const reviewable = stale.filter(reviewClearsIssue);
+  if (reviewable.length)
+    next.push(
+      `re-review stale context, then: ${cli} record-context-review --repo . ${reviewable.map(contextReviewSelector).join(" ")} --reason "<what you re-checked>"`,
+    );
+  for (const issue of stale.filter((item) => !reviewClearsIssue(item))) next.push(`fix ${issue.key} in .agents/manifest.yaml: ${issue.reason}`);
   if (report) {
     for (const failure of report.failed.slice(0, 5)) {
       next.push(`fix failing check "${failure.id}": ${failure.cmd}`);
@@ -132,8 +144,7 @@ function inheritedContextActions(issues: ContextFreshnessIssue[], base: string, 
       return action;
     }
     if (issue.changedSources.length) action.commands.push(`git log -n 5 --oneline -- ${issue.changedSources.map(shellArg).join(" ")}`);
-    const selector = issue.kind === "knowledge" ? `--path ${shellArg(issue.target)}` : `--module ${shellArg(issue.target)}`;
-    action.commands.push(`${cli} record-context-review --repo . ${selector} --reason "<what you re-checked>"`);
+    action.commands.push(`${cli} record-context-review --repo . ${contextReviewSelector(issue)} --reason "<what you re-checked>"`);
     return action;
   });
 }
@@ -158,6 +169,15 @@ function reportHuman(report: DeliverReport, cli: string): void {
     return;
   }
   info(`deliver (scope=${report.scope}, base ${report.base}) — ${report.changed.length} changed file(s)`);
+  if (report.scope === "task" && report.task) {
+    const origin = report.task.hostSessionId
+      ? `${report.task.agent ?? "agent"} session ${report.task.hostSessionId}`
+      : report.task.note
+        ? `task-start: ${report.task.note}`
+        : "task-start";
+    info(`  task record: created ${report.task.createdAt} by ${origin}`);
+  }
+  for (const message of report.taskWarnings ?? []) warn(message);
   if (report.scope === "worktree" && report.status !== "no-change") {
     info(`  using worktree diff vs HEAD (no task base); for committed task range run: ${cli} task-start`);
   }
@@ -367,7 +387,10 @@ export function deliverCmd(repo: string, opts: DeliverOpts = {}): number {
   else if (runOk && verifyPassed && stable) status = "accepted";
   else status = "needs-work";
 
-  const actions = inheritedContextActions(inheritedContext, scope.base, cli);
+  const actions = [
+    ...contextFreshnessActions((verifyReport?.context ?? []).filter((issue) => !issue.inherited), cli),
+    ...inheritedContextActions(inheritedContext, scope.base, cli),
+  ];
   if (status === "needs-work") {
     actions.unshift({
       id: "fix-delivery-failures",
@@ -397,8 +420,30 @@ export function deliverCmd(repo: string, opts: DeliverOpts = {}): number {
     stamp,
     inheritedContext,
     errors,
-    next: nextActions(status, runReport, cli),
+    next: nextActions(status, runReport, cli, verifyReport?.context ?? []),
     nextActions: actions,
+    ...(scope.task ? { task: scope.task } : {}),
+    ...(scope.kind === "task" ? { taskWarnings: taskRecordWarnings(repo, scope, cli) } : {}),
   };
   return emitReport(report, opts.json, cli);
+}
+
+const TASK_RECORD_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A task record outlives the session that wrote it; say when it may belong to an earlier task. */
+function taskRecordWarnings(repo: string, scope: ChangeScope, cli: string): string[] {
+  const task = scope.task;
+  if (!task) return [];
+  const warnings: string[] = [];
+  const restart = `if this is a new task, run ${cli} task-start --repo . first`;
+  const age = Date.now() - Date.parse(task.createdAt);
+  if (Number.isFinite(age) && age > TASK_RECORD_STALE_MS)
+    warnings.push(`task record is ${Math.floor(age / (24 * 60 * 60 * 1000))} day(s) old (base ${task.baseSha}); ${restart}`);
+  try {
+    if (!isAncestorCommit(repo, task.baseSha, "HEAD"))
+      warnings.push(`task base ${task.baseSha} is not an ancestor of HEAD, so the scope includes unrelated history; ${restart}`);
+  } catch {
+    // Ancestry is advisory; scope resolution already validated the base.
+  }
+  return warnings;
 }

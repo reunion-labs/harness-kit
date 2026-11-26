@@ -1,9 +1,12 @@
 import { execSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { DEFAULT_COMMAND_TIMEOUT_MS, readBaseline, runCapture } from "../contracts";
-import { inheritedContextIssueKeys } from "../delivery";
+import { inheritedContextIssueKeys, resolveChangeScope } from "../delivery";
+import { collectChanges, type ChangeSet } from "../git";
 import { runEnforcement } from "../enforce";
 import {
   buildHarnessGuidance,
+  contextFreshnessActions,
   type HarnessNextAction,
   type VerificationGapDetail,
   type VerificationGapSummary,
@@ -17,6 +20,7 @@ import { inspectContextFreshness, type ContextFreshnessIssue } from "../state";
 import { markManualVerifyResult } from "../validation-state";
 import { err, info, ok, warn } from "../util";
 import { inspectValidationGateHealth } from "../validation-gates";
+import { checkEnvironment, writeChangedFilesList } from "./run-checks";
 
 export interface VerifyOpts {
   budgetMs?: number;
@@ -55,10 +59,10 @@ export interface VerifyReport {
   messages: VerifyMessage[];
 }
 
-function runCheck(repo: string, cmd: string, timeoutMs: number): CheckResult {
+function runCheck(repo: string, cmd: string, timeoutMs: number, env: NodeJS.ProcessEnv): CheckResult {
   if (timeoutMs <= 0) return { ok: false, timedOut: true };
   try {
-    execSync(cmd, { cwd: repo, stdio: "ignore", timeout: Math.max(1, timeoutMs), killSignal: "SIGTERM" });
+    execSync(cmd, { cwd: repo, env, stdio: "ignore", timeout: Math.max(1, timeoutMs), killSignal: "SIGTERM" });
     return { ok: true, timedOut: false };
   } catch (error) {
     return { ok: false, timedOut: (error as { code?: string }).code === "ETIMEDOUT" };
@@ -240,87 +244,109 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
   }
   if (!context.length && !messages.some((message) => message.level === "error" && message.text.startsWith("context freshness")))
     emit("ok", "context reviews are current");
+  guidance.nextActions.unshift(...contextFreshnessActions(context, cli));
 
-  emit("info", "\n3) Invariants");
-  for (const invariant of manifest.invariants ?? []) {
-    if (!withinBudget(`before invariant ${invariant.id}`)) break;
-    if (invariant.manual) {
-      continue;
-    }
-    if (invariant.enforcement) {
-      let violations: ReturnType<typeof runEnforcement>;
-      try {
-        violations = runEnforcement(repo, invariant.id, invariant.enforcement);
-      } catch (error) {
-        failures++;
-        emit("error", `${invariant.id}: enforcement matcher/filesystem failed (${(error as Error).message})`);
-        continue;
-      }
-      if (!withinBudget(`while enforcing invariant ${invariant.id}`)) break;
-      if (violations.length) {
-        failures++;
-        emit("error", `${invariant.id}: ${violations.length} violation(s)`);
-        for (const violation of violations.slice(0, 10))
-          emit("info", `       ${violation.file}:${violation.line}  ${violation.reason}  | ${violation.snippet}`);
-      } else emit("ok", invariant.id);
-    } else if (invariant.check) {
-      const result = runCheck(repo, invariant.check, remainingMs());
-      if (result.ok) emit("ok", `${invariant.id} (check)`);
-      else {
-        failures++;
-        emit(
-          "error",
-          `${invariant.id}: check ${result.timedOut ? "timed out / verification budget exhausted" : "failed"} (${invariant.check})`,
-        );
-      }
+  // An invariant or contract `check` sees the same change context run-checks
+  // gives a capability, so "only changed files" rules behave alike in both.
+  // Snapshots get no change list: they must fingerprint the whole interface.
+  const needsChangeContext = (manifest.invariants ?? []).some((invariant) => !invariant.manual && !invariant.enforcement && invariant.check) ||
+    (manifest.contracts ?? []).some((contract) => contract.check);
+  let checkChanges: ChangeSet | null = null;
+  if (needsChangeContext) {
+    try {
+      checkChanges = opts.contextBase !== undefined
+        ? collectChanges(repo, opts.contextBase, { mode: "exact" })
+        : resolveChangeScope(repo).changes;
+    } catch {
+      checkChanges = null; // verify stays usable outside Git; checks just get no change context
     }
   }
-
-  const contracts = manifest.contracts ?? [];
-  const autochecked = contracts.filter((contract) => contract.check || contract.snapshot);
-  if (autochecked.length) {
-    emit("info", "\n4) Contracts");
-    for (const contract of autochecked) {
-      if (!withinBudget(`before contract ${contract.id}`)) break;
-      try {
-        if (contract.check) {
-          const result = runCheck(repo, contract.check, remainingMs());
-          if (result.ok) emit("ok", `${contract.id} (check)`);
-          else {
-            failures++;
-            emit(
-              "error",
-              `${contract.id}: check ${result.timedOut ? "timed out / verification budget exhausted" : "failed"} (${contract.check})`,
-            );
-          }
-        }
-        if (contract.snapshot) {
-          const captured = runCapture(repo, contract.snapshot, remainingMs());
-          if (!captured.ok) {
-            failures++;
-            emit(
-              "error",
-              `${contract.id}: snapshot command ${captured.timedOut ? "timed out / verification budget exhausted" : "failed"} (${contract.snapshot})`,
-            );
-          } else {
-            const baseline = readBaseline(repo, contract.id);
-            if (baseline === null) emit("warn", `${contract.id}: snapshot baseline not set — run \`${cli} accept-contract --id ${contract.id}\``);
-            else if (baseline !== captured.stdout) {
-              failures++;
-              emit("error", `${contract.id}: contract drifted from baseline${contract.breaking_needs ? ` (breaking -> ${contract.breaking_needs})` : ""}`);
-              emit(
-                "info",
-                `       if intended: ${contract.breaking_needs ? `treat it as a ${contract.breaking_needs} change (breaking_needs), then ` : ""}\`${cli} accept-contract --id ${contract.id}\``,
-              );
-            } else emit("ok", `${contract.id} (snapshot)`);
-          }
-        }
-      } catch (error) {
-        failures++;
-        emit("error", `${contract.id}: contract filesystem verification failed (${(error as Error).message})`);
+  const changedFilesList = checkChanges ? writeChangedFilesList(checkChanges.files) : null;
+  const checkEnv = checkEnvironment(checkChanges, changedFilesList?.path ?? null);
+  try {
+    emit("info", "\n3) Invariants");
+    for (const invariant of manifest.invariants ?? []) {
+      if (!withinBudget(`before invariant ${invariant.id}`)) break;
+      if (invariant.manual) {
+        continue;
       }
-      if (!withinBudget(`while checking contract ${contract.id}`)) break;
+      if (invariant.enforcement) {
+        let violations: ReturnType<typeof runEnforcement>;
+        try {
+          violations = runEnforcement(repo, invariant.id, invariant.enforcement);
+        } catch (error) {
+          failures++;
+          emit("error", `${invariant.id}: enforcement matcher/filesystem failed (${(error as Error).message})`);
+          continue;
+        }
+        if (!withinBudget(`while enforcing invariant ${invariant.id}`)) break;
+        if (violations.length) {
+          failures++;
+          emit("error", `${invariant.id}: ${violations.length} violation(s)`);
+          for (const violation of violations.slice(0, 10))
+            emit("info", `       ${violation.file}:${violation.line}  ${violation.reason}  | ${violation.snippet}`);
+        } else emit("ok", invariant.id);
+      } else if (invariant.check) {
+        const result = runCheck(repo, invariant.check, remainingMs(), checkEnv);
+        if (result.ok) emit("ok", `${invariant.id} (check)`);
+        else {
+          failures++;
+          emit(
+            "error",
+            `${invariant.id}: check ${result.timedOut ? "timed out / verification budget exhausted" : "failed"} (${invariant.check})`,
+          );
+        }
+      }
     }
+
+    const contracts = manifest.contracts ?? [];
+    const autochecked = contracts.filter((contract) => contract.check || contract.snapshot);
+    if (autochecked.length) {
+      emit("info", "\n4) Contracts");
+      for (const contract of autochecked) {
+        if (!withinBudget(`before contract ${contract.id}`)) break;
+        try {
+          if (contract.check) {
+            const result = runCheck(repo, contract.check, remainingMs(), checkEnv);
+            if (result.ok) emit("ok", `${contract.id} (check)`);
+            else {
+              failures++;
+              emit(
+                "error",
+                `${contract.id}: check ${result.timedOut ? "timed out / verification budget exhausted" : "failed"} (${contract.check})`,
+              );
+            }
+          }
+          if (contract.snapshot) {
+            const captured = runCapture(repo, contract.snapshot, remainingMs());
+            if (!captured.ok) {
+              failures++;
+              emit(
+                "error",
+                `${contract.id}: snapshot command ${captured.timedOut ? "timed out / verification budget exhausted" : "failed"} (${contract.snapshot})`,
+              );
+            } else {
+              const baseline = readBaseline(repo, contract.id);
+              if (baseline === null) emit("warn", `${contract.id}: snapshot baseline not set — run \`${cli} accept-contract --id ${contract.id}\``);
+              else if (baseline !== captured.stdout) {
+                failures++;
+                emit("error", `${contract.id}: contract drifted from baseline${contract.breaking_needs ? ` (breaking -> ${contract.breaking_needs})` : ""}`);
+                emit(
+                  "info",
+                  `       if intended: ${contract.breaking_needs ? `treat it as a ${contract.breaking_needs} change (breaking_needs), then ` : ""}\`${cli} accept-contract --id ${contract.id}\``,
+                );
+              } else emit("ok", `${contract.id} (snapshot)`);
+            }
+          }
+        } catch (error) {
+          failures++;
+          emit("error", `${contract.id}: contract filesystem verification failed (${(error as Error).message})`);
+        }
+        if (!withinBudget(`while checking contract ${contract.id}`)) break;
+      }
+    }
+  } finally {
+    if (changedFilesList) rmSync(changedFilesList.dir, { recursive: true, force: true });
   }
   emit("info", "\n5) Agent lifecycle hooks");
   const configuredAgents = hooks.configuredAgents.length ? hooks.configuredAgents.join(", ") : "none";
@@ -346,6 +372,19 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
     } else emit("info", `       details: \`${cli} verify --details\``);
   }
 
+  if (failures && !guidance.nextActions.some((action) => action.priority === "required")) {
+    guidance.nextActions.unshift({
+      id: "fix-verify-failures",
+      priority: "required",
+      owner: "agent",
+      when: "before-finish",
+      title: `Fix the ${failures} verify problem(s) reported above`,
+      reason: messages.filter((message) => message.level === "error").map((message) => message.text).slice(0, 3).join("; ") ||
+        "verify failed.",
+      commands: [`${cli} verify --repo .`],
+      completion: "verify exits 0.",
+    });
+  }
   const visibleActions = opts.details
     ? guidance.nextActions
     : guidance.nextActions.filter((action) => action.priority === "required");

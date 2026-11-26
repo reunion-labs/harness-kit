@@ -33,9 +33,12 @@ Out of scope (do NOT modify here):
 
 ## Dependencies
 
-Upstream: Kubernetes API, 容器镜像仓库
+Upstream:
+- Kubernetes API
+- 容器镜像仓库
 
-Downstream: 使用者的终端 / CI 流水线
+Downstream:
+- 使用者的终端 / CI 流水线
 
 ## Commands
 
@@ -51,9 +54,9 @@ Downstream: 使用者的终端 / CI 流水线
 
 ## Invariants (must hold)
 
-- 每个子命令必须支持 --help [checked]
-- 退出码须在 docs 中登记 [manual]
-- 日志不得打印 token/凭证 [enforced]
+- `every-command-has-help`: 每个子命令必须支持 --help [checked]
+- `documented-exit-codes`: 退出码须在 docs 中登记 [manual]
+- `no-plaintext-secrets-in-logs`: 日志不得打印 token/凭证 [enforced]
 
 Run `npx -y @erzhe/harness-kit@latest verify` to check the enforceable ones.
 

@@ -98,6 +98,8 @@ Options:
                      (default: false)
   --candidate <dir>  prepared adoption bundle outside the repository
   --audit <receipt>  pass audit receipt bound to the candidate bundle
+  --create-entry     create the first AGENTS.md without an adoption audit (only
+                     when no agent guidance exists) (default: false)
   -h, --help         display help for command
 
 ## upgrade
@@ -229,8 +231,10 @@ bound sources
 
 Options:
   -C, --repo <dir>         target repo dir (default: current directory)
-  --path <knowledge-path>  exact knowledge.path from the manifest
-  --module <name>          exact module name (mutually exclusive with --path)
+  --path <knowledge-path>  knowledge.path from the manifest, or its
+                           repo-relative path (repeatable)
+  --module <name>          exact module name (repeatable; may be combined with
+                           --path)
   --reason <text>          what was reviewed and why the context remains correct
   --session <token>        Agent/session identifier to keep with the review
                            evidence

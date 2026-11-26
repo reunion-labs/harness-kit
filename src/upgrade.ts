@@ -30,6 +30,8 @@ export interface UpgradeVerification {
   verify?: { exitCode: number; report?: unknown; output?: string; error?: string };
 }
 
+export const UPGRADE_HOOKS_NOTE = "upgrade does not install, remove, or rewrite lifecycle hooks";
+
 export interface UpgradeReport {
   schema: typeof UPGRADE_REPORT_SCHEMA;
   status: UpgradeStatus;
@@ -133,7 +135,7 @@ function reportBase(options: UpgradeOptions): UpgradeReport {
     dirtyFiles: [],
     hooksChanged: false,
     errors: [],
-    notes: ["upgrade does not install, remove, or rewrite lifecycle hooks"],
+    notes: [UPGRADE_HOOKS_NOTE],
   };
 }
 
@@ -257,7 +259,15 @@ function internalUpgrade(repo: string, options: UpgradeOptions): UpgradeReport {
   const finalManifestContent = manifestChanged ? migratedManifestContent : manifestInspection.currentContent;
   // Generated entries pin the lock version, so render them for the version
   // this same transaction writes into the lock.
-  const generated = renderTargets(finalManifest, { harnessVersion: nextState.version });
+  // Upgrade refreshes existing entries but never creates the first AGENTS.md:
+  // that is the audited end of onboarding (see assertFirstEntryAuthorized).
+  const rendered = renderTargets(finalManifest, { harnessVersion: nextState.version });
+  const entryMissing = inspectManagedFiles(repo, [["AGENTS.md", ""], ["CLAUDE.md", ""]]).map((inspection) => inspection.kind === "missing");
+  const generated = entryMissing[0]
+    ? rendered.filter(([path]) => path !== "AGENTS.md" && !(path === "CLAUDE.md" && entryMissing[1]))
+    : rendered;
+  if (entryMissing[0])
+    report.notes.push("AGENTS.md does not exist yet, so upgrade did not create it; onboarding creates the first entry with sync");
   const targets: ManagedFileTarget[] = [
     // Keep an unchanged manifest in the transaction preflight so generated
     // files can never be committed from bytes that changed after planning.

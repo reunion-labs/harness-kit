@@ -1,5 +1,5 @@
 import pkg from "../../package.json";
-import { assertManagedFileAdoption, assertManagedFileAdoptionReceipt } from "../adoption";
+import { assertFirstEntryAuthorized, assertManagedFileAdoption, assertManagedFileAdoptionReceipt } from "../adoption";
 import { HARNESS_LOCK_REL, lockedHarnessVersion } from "../harness-cli";
 import { loadManifest, validateManifest } from "../manifest";
 import { writeManagedFiles } from "../managed-files";
@@ -10,6 +10,8 @@ export interface SyncOpts {
   adoptExisting?: boolean;
   adoptionCandidate?: string;
   adoptionAudit?: string;
+  /** Explicitly create the first AGENTS.md without an adoption audit (repository with no agent guidance). */
+  createEntry?: boolean;
 }
 
 export function syncCmd(repo: string, opts: SyncOpts = {}): void {
@@ -24,6 +26,8 @@ export function syncCmd(repo: string, opts: SyncOpts = {}): void {
         "Use `upgrade` to move the repository to this version.",
     );
   const targets = renderTargets(m, { harnessVersion });
+  if (opts.adoptExisting && opts.createEntry)
+    throw new Error("--create-entry skips the adoption audit; it cannot be combined with --adopt-existing");
   if (!!opts.adoptionCandidate !== !!opts.adoptionAudit)
     throw new Error("adoption requires both --candidate <bundle> and --audit <receipt>");
   if ((opts.adoptionCandidate || opts.adoptionAudit) && !opts.adoptExisting)
@@ -43,6 +47,7 @@ export function syncCmd(repo: string, opts: SyncOpts = {}): void {
       // managed/current, but an actual first takeover cannot pass without the
       // content-bound candidate + audit receipt pair above.
       assertManagedFileAdoption(repo, inspections, false);
+      assertFirstEntryAuthorized(repo, inspections, !!opts.createEntry);
     },
   });
   const preservedAliases = new Set(result.preservedAliases);

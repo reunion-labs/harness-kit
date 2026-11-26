@@ -369,27 +369,89 @@ export interface RecordContextReviewOpts {
   session?: string;
 }
 
-export function recordContextReview(repo: string, manifest: Manifest, opts: RecordContextReviewOpts): ContextReviewRecord {
-  if (!!opts.path === !!opts.module) throw new Error("只能指定一个 --path 或 --module");
+export interface RecordContextReviewsOpts {
+  paths?: string[];
+  modules?: string[];
+  reason: string;
+  session?: string;
+}
+
+function selectorPath(repo: string, raw: string): string {
+  const absolute = resolve(repo, raw);
+  const relativePath = inside(resolve(repo), absolute) ? relative(resolve(repo), absolute) : raw;
+  return repoRelative(relativePath);
+}
+
+/**
+ * The knowledge entry a --path names. The manifest spelling is canonical, but
+ * the repository-relative spelling an Agent sees on disk (`.agents/knowledge/x.md`,
+ * `./x`, a trailing slash, an absolute path inside the target) means the same entry.
+ */
+function knowledgeForPath(repo: string, manifest: Manifest, raw: string): Knowledge {
+  const exact = (manifest.knowledge ?? []).filter((knowledge) => knowledge.path === raw);
+  if (exact.length === 1) return exact[0]!;
+  const wanted = selectorPath(repo, raw);
+  const matches = exact.length
+    ? exact
+    : (manifest.knowledge ?? []).filter((knowledge) => {
+      const declared = repoRelative(knowledge.path);
+      const onDisk = repoRelative(knowledge.root === "repo" ? knowledge.path : `.agents/${knowledge.path}`);
+      return wanted === onDisk || (knowledge.root !== "repo" && wanted === declared);
+    });
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length) throw new Error(`knowledge path 有歧义: ${raw}`);
+  const reviewable = (manifest.knowledge ?? []).filter((knowledge) => knowledge.binds?.length || knowledge.authority);
+  throw new Error(
+    `manifest 未声明 knowledge path: ${raw}` +
+      (reviewable.length
+        ? `；可复核的 knowledge.path: ${reviewable.map((knowledge) => knowledge.path).join(", ")}` +
+          "（也接受仓库相对写法，如 .agents/<knowledge.path>）"
+        : "；manifest 里没有声明 binds/authority 的 knowledge"),
+  );
+}
+
+function reviewSnapshot(repo: string, manifest: Manifest, snapshots: ContextSnapshot[], selector: { path?: string; module?: string }): ContextSnapshot {
+  let snapshot: ContextSnapshot | undefined;
+  if (selector.path !== undefined) {
+    const knowledge = knowledgeForPath(repo, manifest, selector.path);
+    snapshot = snapshots.find((item) => item.key === knowledgeKey(knowledge));
+    if (!snapshot) throw new Error(`context 没有 binds/authority，无法记录复核: ${selector.path}`);
+  } else {
+    snapshot = snapshots.find((item) => item.kind === "module" && item.target === selector.module);
+    if (!snapshot) {
+      const reviewable = snapshots.filter((item) => item.kind === "module").map((item) => item.target);
+      throw new Error(
+        `manifest 未声明可复核 module: ${selector.module}` + (reviewable.length ? `；可复核的 module: ${reviewable.join(", ")}` : ""),
+      );
+    }
+  }
+  if (snapshot.contentHash === "(missing)") throw new Error(`context target missing: ${snapshot.target}`);
+  const missing = missingSources(snapshot);
+  if (missing.length) throw new Error(`context source missing: ${missing.join(", ")}`);
+  return snapshot;
+}
+
+/**
+ * Record one Agent review for several contexts in a single state write. Every
+ * selector is resolved before anything is written, so one bad name records nothing.
+ */
+export function recordContextReviews(repo: string, manifest: Manifest, opts: RecordContextReviewsOpts): ContextReviewRecord[] {
+  const selectors = [
+    ...(opts.paths ?? []).map((path) => ({ path })),
+    ...(opts.modules ?? []).map((module) => ({ module })),
+  ];
+  if (!selectors.length) throw new Error("record-context-review 需要至少一个 --path 或 --module");
   const reason = opts.reason?.trim();
   if (!reason) throw new Error("record-context-review requires a non-empty --reason");
 
   const snapshots = contextSnapshots(repo, manifest);
-  let snapshot: ContextSnapshot | undefined;
-  if (opts.path) {
-    const matches = (manifest.knowledge ?? []).filter((knowledge) => knowledge.path === opts.path);
-    if (matches.length !== 1) throw new Error(matches.length ? `knowledge path 有歧义: ${opts.path}` : `manifest 未声明 knowledge path: ${opts.path}`);
-    snapshot = snapshots.find((item) => item.key === knowledgeKey(matches[0]));
-  } else {
-    snapshot = snapshots.find((item) => item.kind === "module" && item.target === opts.module);
-    if (!snapshot) throw new Error(`manifest 未声明可复核 module: ${opts.module}`);
+  const chosen = new Map<string, ContextSnapshot>();
+  for (const selector of selectors) {
+    const snapshot = reviewSnapshot(repo, manifest, snapshots, selector);
+    chosen.set(snapshot.key, snapshot);
   }
-  if (!snapshot) throw new Error(`context 没有 binds/entry，无法记录复核: ${opts.path ?? opts.module}`);
-  if (snapshot.contentHash === "(missing)") throw new Error(`context target missing: ${snapshot.target}`);
-  const missing = missingSources(snapshot);
-  if (missing.length) throw new Error(`context source missing: ${missing.join(", ")}`);
-
-  const record: ContextReviewRecord = {
+  const reviewedAt = new Date().toISOString();
+  const records = [...chosen.values()].map((snapshot): ContextReviewRecord => ({
     key: snapshot.key,
     kind: snapshot.kind,
     target: snapshot.target,
@@ -398,9 +460,20 @@ export function recordContextReview(repo: string, manifest: Manifest, opts: Reco
     sources: snapshot.sources,
     reason,
     ...(opts.session ? { session: opts.session } : {}),
-    reviewedAt: new Date().toISOString(),
-  };
+    reviewedAt,
+  }));
   const state = readState(repo) ?? { bindings: {} };
-  writeState(repo, { ...state, reviews: { ...(state.reviews ?? {}), [record.key]: record } });
-  return record;
+  const reviews = { ...(state.reviews ?? {}) };
+  for (const record of records) reviews[record.key] = record;
+  writeState(repo, { ...state, reviews });
+  return records;
+}
+
+export function recordContextReview(repo: string, manifest: Manifest, opts: RecordContextReviewOpts): ContextReviewRecord {
+  if (!!opts.path === !!opts.module) throw new Error("只能指定一个 --path 或 --module");
+  return recordContextReviews(repo, manifest, {
+    ...(opts.path ? { paths: [opts.path] } : { modules: [opts.module!] }),
+    reason: opts.reason,
+    session: opts.session,
+  })[0]!;
 }

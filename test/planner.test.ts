@@ -304,3 +304,29 @@ test("a unit or production file matched by an over-broad acceptance glob cannot 
   const realAcceptance = planChecks(manifest, ["src/page.ts", "test/page.test.ts", "e2e/page.spec.ts"]);
   assert.ok(!realAcceptance.gaps.some((gap) => gap.kind === "missing-test-touch" && gap.where === "gate:flow"));
 });
+
+test("Harness-managed paths are covered by verify, so they are never unmapped or required-unmapped", () => {
+  const m = withModules({
+    modules: [{ name: "svc", role: "r", entry: [], owns: ["cmd/**"], tests: ["cmd/**/*_test.go"], checks: ["test"] }],
+    validation: { required_coverage: ["**/*.go", "**/*.json"], defaults: { no_match: ["typecheck"] } },
+  });
+  const p = planChecks(m, [
+    ".agents/checks/snapshot/main.go",
+    ".agents/manifest.yaml",
+    ".claude/settings.json",
+    "AGENTS.md",
+    "tools/gen.go",
+  ]);
+  const required = p.gaps.find((gap) => gap.kind === "unmapped-required-file");
+  assert.equal(required?.where, "tools/gen.go", "only the real production file stays required");
+  assert.ok(!p.gaps.some((gap) => gap.kind === "unmapped-file"), JSON.stringify(p.gaps));
+  // Nothing matched a module, so the no_match fallback still runs a check.
+  assert.deepEqual(p.checks.map((check) => check.id), ["typecheck"]);
+
+  // A module may still own Harness paths to add its own checks.
+  const owned = planChecks(
+    withModules({ modules: [{ name: "harness", role: "r", entry: [], owns: [".agents/**"], checks: ["test"] }] }),
+    [".agents/checks/snapshot/main.go"],
+  );
+  assert.deepEqual(owned.affected, ["harness"]);
+});

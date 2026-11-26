@@ -36,6 +36,7 @@ const program = new Command();
 program.name("harness-kit").description("AI-friendly repo harness").version(pkg.version);
 
 const repoOf = (o: { repo?: string }) => resolve(o.repo ?? process.cwd());
+const collect = (value: string, previous: string[] | undefined): string[] => [...(previous ?? []), value];
 
 function agentList(value: string): AgentTool[] {
   const agents = value
@@ -62,12 +63,14 @@ program
   .option("--adopt-existing", "apply only a content-bound, pass-attested legacy adoption", false)
   .option("--candidate <dir>", "prepared adoption bundle outside the repository")
   .option("--audit <receipt>", "pass audit receipt bound to the candidate bundle")
+  .option("--create-entry", "create the first AGENTS.md without an adoption audit (only when no agent guidance exists)", false)
   .action((o) =>
     guard(() =>
       syncCmd(repoOf(o), {
         adoptExisting: o.adoptExisting,
         adoptionCandidate: o.candidate,
         adoptionAudit: o.audit,
+        createEntry: o.createEntry,
       }),
     ),
   );
@@ -205,8 +208,8 @@ program
   .command("record-context-review")
   .description("record an Agent's completed review of one knowledge item or module against its bound sources")
   .option("-C, --repo <dir>", "target repo dir (default: current directory)")
-  .option("--path <knowledge-path>", "exact knowledge.path from the manifest")
-  .option("--module <name>", "exact module name (mutually exclusive with --path)")
+  .option("--path <knowledge-path>", "knowledge.path from the manifest, or its repo-relative path (repeatable)", collect)
+  .option("--module <name>", "exact module name (repeatable; may be combined with --path)", collect)
   .requiredOption("--reason <text>", "what was reviewed and why the context remains correct")
   .option("--session <token>", "Agent/session identifier to keep with the review evidence")
   .option("--json", "machine-readable output", false)
