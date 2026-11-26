@@ -214,3 +214,14 @@ test("onboard covers the 0.8.1 upgrade-round fixes", () => {
   assert.match(out, /doctor 会按“文件:行”列出/);
   assert.match(out, /`sync`（或下一次 `upgrade`）会自动删掉它们在 `\.agents\/\.harness-state\.json` 里的复核记录/);
 });
+
+test("onboard and check-loop cover the 0.8.2 fixes", () => {
+  const { out } = captureStdout(onboardCmd);
+  // A runner that dies after reading the hook input no longer loops, and the let-through says so.
+  assert.match(out, /runner 文件缺失或异常退出时，客户端配置里的外层兜底同样每轮只拦一次，放行时提示未验证/);
+  const loop = captureStdout(checkLoopCmd).out;
+  // evidence's top-level agent names who delivered; the session token is the shared worktree record.
+  assert.match(loop, /`evidence` 顶层的 `agent` 写谁跑了最近一次 deliver/);
+  assert.match(loop, /`record\.kind: agent-deliver`/);
+  assert.doesNotMatch(loop, /顶层的 `agent: manual` 只说明/);
+});

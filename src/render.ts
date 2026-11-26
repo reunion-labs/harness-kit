@@ -57,7 +57,7 @@ function agentsMdLines(m: Manifest, opts: RenderOptions): Array<{ text: string; 
   fixed.push(
     "Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` " +
       "(plus `.agents/routing.md` / `.agents/modules.md` when declared). " +
-      `Edit the manifest, then run \`${hk} sync\`. Knowledge is hand-authored; \`.agents/hooks/\` belongs to \`install-hooks\`.`,
+      `Edit the manifest, then run \`${hk} sync\`. Knowledge is hand-authored; \`.agents/hooks/\` is written by \`install-hooks\` and refreshed by \`upgrade\`.`,
     "",
   );
   const hasImpactMap = (m.modules ?? []).some((mod) => (mod.owns?.length ?? 0) > 0) || !!m.validation;

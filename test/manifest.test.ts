@@ -108,10 +108,20 @@ test("the repository impact map records the 0.8.1 upgrade-round decisions", () =
   const module = (name: string) => manifest.modules?.find((item) => item.name === name);
   assert.ok(module("render")?.pitfalls?.some((pitfall) => /汉字 \/ 假名每个算半个词/.test(pitfall)));
   assert.ok(module("planner")?.pitfalls?.some((pitfall) => /capability 的 run 命令引用/.test(pitfall)));
-  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /外层 Stop 兜底也要带 stop_hook_active 守卫/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /兜底的 stop_hook_active 守卫读这份副本/.test(pitfall)));
   assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /rebind/.test(pitfall)));
   assert.ok(module("repository-upgrade")?.pitfalls?.some((pitfall) => /原位刷新已由 Harness 管理的项目级 hook/.test(pitfall)));
   assert.ok(module("managed-generation")?.pitfalls?.some((pitfall) => /retired review/.test(pitfall)));
+});
+
+test("the repository impact map records the 0.8.2 decisions", () => {
+  const manifest = loadManifest(REPO);
+  const module = (name: string) => manifest.modules?.find((item) => item.name === name);
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /先把 stdin 读进变量再交给 runner.*放行时同样提示未验证/.test(pitfall)));
+  assert.ok(module("agent-hooks")?.pitfalls?.some((pitfall) => /HARNESS_KIT_CMD override 放在 runner 调用之前/.test(pitfall)));
+  const upgradeRoute = manifest.routing?.find((route) => route.when.startsWith("改 Harness 版本升级规则"));
+  assert.ok(upgradeRoute?.dont_assume?.some((rule) => /已装的项目级 Hook 也在其中原位刷新/.test(rule)));
+  assert.ok(!upgradeRoute?.dont_assume?.some((rule) => /必须留给 install-hooks 显式处理/.test(rule)));
 });
 
 test("SPEC states the exact declarative enforcement scan semantics", () => {

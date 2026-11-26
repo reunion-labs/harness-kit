@@ -194,26 +194,26 @@ test("default thin Stop leaves lifecycle proof: SessionStart, each Stop, and the
 
   body = evidenceJson(repo);
   assert.equal(body.hookActive, true, JSON.stringify(body.lifecycle));
-  // The latest record is the manual deliver; the proof comes from the lifecycle session.
-  assert.equal(body.agent, "manual");
+  // The latest record is the deliver this session ran from its shell; the proof comes from the lifecycle session.
+  assert.equal(body.agent, "claude");
   assert.equal(body.hookActiveSource, "lifecycle");
   assert.deepEqual(
     { kind: body.record.kind, agent: body.record.agent, hostSessionId: body.record.hostSessionId },
-    { kind: "manual-deliver", agent: "manual", hostSessionId: null },
+    { kind: "agent-deliver", agent: "claude", hostSessionId: "thin-proof" },
   );
   // The top-level configuration flag follows the hook proof, never false beside a current lifecycle.
   assert.equal(body.hookConfigurationCurrent, true);
   assert.equal(body.lifecycle.configurationCurrent, true);
   assert.equal(body.lifecycle.hostSessionId, "thin-proof");
   const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
-  assert.match(text, /this record is not hook proof/);
+  assert.match(text, /a command, not hook proof/);
   assert.match(text, /hook proof \(hookActive\): yes, from the lifecycle session/);
   assert.equal(body.lifecycle.stop.decision, "allow");
   assert.equal(body.lifecycle.stop.reason, "stamp");
   assert.equal(body.lifecycle.evidenceSource, "deliver-stamp");
   assert.equal(body.lifecycle.evidenceValid, true);
   // The stamp itself still comes from deliver: observing a Stop never moves the latest pointer.
-  assert.equal(body.agent, "manual");
+  assert.equal(body.record.kind, "agent-deliver");
   assert.equal(body.stamp.status, "accepted");
   const active = inspectAgentHookStatus(repo);
   assert.equal(active.state, "active");
@@ -379,7 +379,11 @@ test("execute mode: SessionStart base + Stop runs checks without demanding a new
   const overridden = JSON.parse(originalHooks);
   overridden.hooks.SessionStart[0].hooks[0].command =
     `HARNESS_KIT_CMD=true ${overridden.hooks.SessionStart[0].hooks[0].command}`;
-  overridden.hooks.Stop[0].hooks[0].command = `HARNESS_KIT_CMD=true ${overridden.hooks.Stop[0].hooks[0].command}`;
+  // The buffered Stop command reads stdin first; the override goes where the runner starts.
+  overridden.hooks.Stop[0].hooks[0].command = overridden.hooks.Stop[0].hooks[0].command.replace(
+    `printf '%s' "$INPUT" | bash `,
+    `printf '%s' "$INPUT" | HARNESS_KIT_CMD=true bash `,
+  );
   writeFileSync(hooksPath, JSON.stringify(overridden));
   assert.equal(inspectAgentHookStatus(repo).state, "degraded");
   const rebound = spawnSync(TSX, [CLI, "evidence", "--repo", repo, "--session", body.session, "--json"], {
@@ -572,12 +576,20 @@ test("a 0.8.1 session records its foreign hook config and is rebound after an in
   assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
   const settingsPath = join(repo, ".claude", "settings.json");
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  // Start from the older, unconditional Stop fallback (still a managed entry).
-  settings.hooks.Stop[0].hooks[0].command = settings.hooks.Stop[0].hooks[0].command.replace(/ \|\| grep -Eq '[^']*'/, "");
+  // Start from the 0.8.1 Stop command (still a managed entry).
+  settings.hooks.Stop[0].hooks[0].command =
+    `bash "$(git rev-parse --show-toplevel)/.agents/hooks/harness-agent-hook.sh" claude stop || ` +
+    `grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true' || ` +
+    `printf '%s\\n' '{"decision":"block","reason":"harness-kit hook runner is missing or failed; run the pinned deliver command from AGENTS.md manually"}'`;
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   commit(repo, "older managed fallback");
   const payload = { session_id: "refresh-in-session" };
   assert.equal(hook(repo, "claude", "session-start", payload).status, 0);
+  // Until this turn's Stop runs there is no hook proof; the text says which Stop gives it.
+  assert.match(
+    spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout,
+    /no Stop observed yet \(the Stop that ends this turn judges the stamp/,
+  );
   // Reinstall during the session (what upgrade's refresh does): only managed bytes change.
   assert.equal(installHooksCmd(repo, { stop: true, agents: ["claude"] }), 0);
   write(repo, "src/core.ts", "export const value = 2;\n");
@@ -596,12 +608,43 @@ test("a deliver the Agent ran from its own shell names the session whose task re
   write(repo, "src/core.ts", "export const value = 2;\n");
   write(repo, "test/core.test.ts", "// covers 2\n");
   assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
-  const body = evidenceJson(repo);
-  assert.equal(body.record.kind, "manual-deliver");
+  let body = evidenceJson(repo);
+  // Top-level agent / createdAt name the delivering session and this evidence,
+  // not the worktree's manual record file, which an earlier task created.
+  assert.deepEqual(
+    { agent: body.agent, kind: body.record.kind, recordAgent: body.record.agent, hostSessionId: body.record.hostSessionId },
+    { agent: "claude", kind: "agent-deliver", recordAgent: "claude", hostSessionId: "shell-deliver" },
+  );
   assert.deepEqual(body.record.deliveredIn, { agent: "claude", hostSessionId: "shell-deliver" });
-  // record.createdAt is this evidence, not the first manual record of the worktree.
+  assert.equal(body.createdAt, body.evidence.createdAt);
   assert.equal(body.record.createdAt, body.evidence.createdAt);
-  assert.equal(body.record.sessionCreatedAt, body.createdAt);
-  const text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
-  assert.match(text, /stamp source: deliver\/manual, run inside claude session shell-deliver \(its task record\)/);
+  assert.equal(body.stamp.session, body.session);
+  let text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
+  assert.match(text, /agent: claude\n/);
+  assert.match(text, /\(this worktree's deliver record\)/);
+  assert.match(text, /stamp source: deliver run by claude session shell-deliver \(its task record scoped this change\) — a command, not hook proof/);
+
+  // A later session's deliver is its own: the shared record file keeps its first time only.
+  const firstRecordAt = body.record.sessionCreatedAt;
+  assert.equal(hook(repo, "claude", "session-start", { session_id: "next-session" }).status, 0);
+  write(repo, "src/core.ts", "export const value = 3;\n");
+  write(repo, "test/core.test.ts", "// covers 3\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  body = evidenceJson(repo);
+  assert.equal(body.record.hostSessionId, "next-session");
+  assert.equal(body.record.sessionCreatedAt, firstRecordAt);
+  assert.notEqual(body.createdAt, firstRecordAt);
+
+  // Without a session's task record (manual task-start), it is a plain manual deliver.
+  assert.equal(spawnSync(TSX, [CLI, "task-start", "--repo", repo], { cwd: repo, encoding: "utf8" }).status, 0);
+  write(repo, "src/core.ts", "export const value = 4;\n");
+  write(repo, "test/core.test.ts", "// covers 4\n");
+  assert.equal(spawnSync(TSX, [CLI, "deliver", "--repo", repo, "--json"], { cwd: repo, encoding: "utf8" }).status, 0);
+  body = evidenceJson(repo);
+  assert.deepEqual(
+    { agent: body.agent, kind: body.record.kind, hostSessionId: body.record.hostSessionId, deliveredIn: body.record.deliveredIn },
+    { agent: "manual", kind: "manual-deliver", hostSessionId: null, deliveredIn: null },
+  );
+  text = spawnSync(TSX, [CLI, "evidence", "--repo", repo], { cwd: repo, encoding: "utf8" }).stdout;
+  assert.match(text, /stamp source: deliver\/manual — this record is not hook proof/);
 });

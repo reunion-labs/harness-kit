@@ -116,7 +116,7 @@
 - Pitfall: Stop 拦截文案写被门禁 target 的绝对 --repo，不能写 --repo .
 - Pitfall: runner 先读完 stdin 再转给 CLI；CLI 不可用时干净工作区放行，脏工作区每轮只拦一次（stop_hook_active / loop_count 即放行），绝不无限拦截
 - Pitfall: CLI 侧 loop-exit 只在 continuing 且 stop-guard 指纹与上次拦截相同时放行，记 lifecycle reason=loop-exit，永远不算门禁证据
-- Pitfall: 客户端配置里的外层 Stop 兜底也要带 stop_hook_active 守卫（runner 缺失时 bash 不读 stdin）；改命令形状时把旧形状留在 isInstalledAgentHookCommand 的识别里
+- Pitfall: 客户端配置里的外层 Stop 命令先把 stdin 读进变量再交给 runner，兜底的 stop_hook_active 守卫读这份副本（runner 读完 stdin 后崩溃也只拦一次），放行时同样提示未验证；改命令形状时把旧形状留在 isInstalledAgentHookCommand 的识别里，HARNESS_KIT_CMD override 放在 runner 调用之前
 - Pitfall: 会话中途刷新 hook（upgrade / install-hooks）后，Stop 只在当前 runner 就是本版本、且除 Harness 自己的条目外客户端配置与 SessionStart 时一致才 rebind；第三方改动、linked Codex 一律要新会话
 
 ## managed-generation — 生成文件接管、软链接边界与事务写入

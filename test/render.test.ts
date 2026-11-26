@@ -182,6 +182,8 @@ test("the fixed working agreement stays small and states the task-start rule onc
   // The word budget counts project content only, but the fixed part must still stay small.
   assert.ok(agreement.trim().split(/\s+/).length <= 240, `working agreement is ${agreement.trim().split(/\s+/).length} words`);
   assert.equal(agreement.match(/task-start/g)?.length, 1);
+  // Since 0.8.1 upgrade refreshes installed hooks too; the agreement must not send agents to install-hooks only.
+  assert.match(agreement, /`\.agents\/hooks\/` is written by `install-hooks` and refreshed by `upgrade`/);
 });
 
 test("the contracts heading does not assume the repository versions its interfaces", () => {

@@ -23,12 +23,16 @@ const AGENTS_MAX_CONTENT_WORDS = 500;
 const PINNED_INVOCATION = /@erzhe\/harness-kit@(\d+\.\d+\.\d+[0-9A-Za-z.+-]*)/g;
 // The 0.7.x init scaffold of .agents/adoption.md named a bare command.
 const LEGACY_ADOPTION_LINE = "(`harness-kit verify`)";
+// From its `## Log` heading on, the adoption log records what happened (with
+// the versions of the day); only the preamble above it is guidance.
+const ADOPTION_REL = ".agents/adoption.md";
+const ADOPTION_LOG_HEADING = /^##\s+Log\s*$/;
 
 /**
  * Hand-written Harness commands that upgrade cannot rewrite: a pin to another
  * version than the lock, or the bare command of the 0.7.x adoption template.
  * Scans the manifest, hand-written .agents documents, and root=repo knowledge
- * documents; journal ADRs are skipped.
+ * documents; history is skipped: journal ADRs and the adoption Log onwards.
  */
 function staleHandWrittenInvocations(repo: string, m: Manifest, locked: string | null): string[] {
   const files = new Set<string>([".agents/manifest.yaml"]);
@@ -41,7 +45,9 @@ function staleHandWrittenInvocations(repo: string, m: Manifest, locked: string |
   for (const rel of [...files].sort()) {
     const text = readText(join(repo, rel));
     if (text === null || isHarnessGenerated(text)) continue;
-    text.split("\n").forEach((line, index) => {
+    const lines = text.split("\n");
+    const log = rel === ADOPTION_REL ? lines.findIndex((line) => ADOPTION_LOG_HEADING.test(line)) : -1;
+    (log >= 0 ? lines.slice(0, log) : lines).forEach((line, index) => {
       for (const match of line.matchAll(PINNED_INVOCATION))
         if (locked && match[1] !== locked) findings.push(`${rel}:${index + 1} pins @erzhe/harness-kit@${match[1]}; the lock pins ${locked}`);
       if (line.includes(LEGACY_ADOPTION_LINE)) findings.push(`${rel}:${index + 1} names a bare \`harness-kit verify\`; say "the pinned \`verify\` command in AGENTS.md"`);
