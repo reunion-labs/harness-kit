@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readTaskRecord } from "../delivery";
 import { repoHarnessInvocation } from "../harness-cli";
 import { collectChanges, EMPTY_TREE_BASE, GitDiffError, type ChangeSet } from "../git";
 import { loadManifest, validateManifest, type Manifest } from "../manifest";
@@ -156,6 +157,23 @@ function evidenceOf(report: RunChecksReport): ValidationEvidence {
     errors: report.errors,
     createdAt: new Date().toISOString(),
   };
+}
+
+/**
+ * A manual run scoped by a task record that a lifecycle SessionStart wrote was
+ * run by that Agent session (deliver from its shell); name it so evidence does
+ * not read as an unrelated manual record.
+ */
+function deliveredIn(repo: string, session: ValidationSession, changes: ChangeSet): Pick<ValidationEvidence, "deliveredIn"> {
+  if (session.agent !== "manual" || !changes.resolvedBase) return {};
+  try {
+    const task = readTaskRecord(repo);
+    if (task?.hostSessionId && task.agent && task.baseSha === changes.resolvedBase)
+      return { deliveredIn: { agent: task.agent, hostSessionId: task.hostSessionId } };
+  } catch {
+    // Attribution is optional; the evidence itself is unchanged.
+  }
+  return {};
 }
 
 function reportHuman(report: RunChecksReport): void {
@@ -424,7 +442,7 @@ export function runChecksCmd(repo: string, opts: RunChecksOpts): number {
 
   if (session) {
     try {
-      recordValidationEvidence(repo, session, evidenceOf(report));
+      recordValidationEvidence(repo, session, { ...evidenceOf(report), ...deliveredIn(repo, session, changes) });
     } catch (error) {
       report = { ...report, status: "not-verified", ok: false, errors: [...report.errors, `evidence write failed: ${(error as Error).message}`] };
     }

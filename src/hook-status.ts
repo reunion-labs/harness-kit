@@ -1,13 +1,14 @@
 import { existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { inspectCodexLinkedHooks, isLinkedGitWorktree } from "./codex-linked-hooks";
-import { gitAdminDir } from "./git";
+import { gitAdminDir, readFileAtCommit } from "./git";
 import { inspectManagedFiles } from "./managed-files";
 import { readLatestHookValidationSession, type ValidationEvidence } from "./validation-state";
 import pkg from "../package.json";
 import { sha256 } from "./util";
 import {
   AGENT_HOOK_RUNNER_MARK,
+  foreignAgentHookConfig,
   installedAgentHookRunnerScript,
   isInstalledAgentHookCommand,
   type AgentTool,
@@ -238,6 +239,41 @@ export function agentHookConfigurationFingerprint(repo: string, agent: AgentTool
   }
   artifacts.push(...linkedArtifacts);
   return sha256(JSON.stringify({ agent, artifacts }));
+}
+
+const CLIENT_CONFIG_RELS: Record<AgentTool, string[]> = {
+  claude: [".claude/settings.json"],
+  cursor: [".cursor/hooks.json"],
+  codex: [".codex/hooks.json", ".codex/config.toml"],
+};
+
+/**
+ * Fingerprint of everything in this agent's project client config except
+ * Harness's own hook entries, read live or from a commit. null when a file is
+ * unreadable, and for linked-worktree Codex, whose path also lives outside the
+ * repository.
+ */
+export function foreignHookConfigurationFingerprint(repo: string, agent: AgentTool, commit?: string): string | null {
+  if (agent === "codex" && isLinkedGitWorktree(repo)) return null;
+  const files: Array<{ path: string; foreign: string }> = [];
+  for (const rel of CLIENT_CONFIG_RELS[agent]) {
+    let content: string | null;
+    try {
+      if (commit) content = readFileAtCommit(repo, commit, rel);
+      else {
+        const issues: string[] = [];
+        const inspected = safeProjectText(repo, rel, issues);
+        if (issues.length) return null;
+        content = inspected.exists ? inspected.content : null;
+      }
+    } catch {
+      return null;
+    }
+    const foreign = foreignAgentHookConfig(rel, content, agent);
+    if (foreign === null) return null;
+    files.push({ path: rel, foreign });
+  }
+  return sha256(JSON.stringify({ agent, files }));
 }
 
 export function inspectAgentHookStatus(repo: string): AgentHookStatus {

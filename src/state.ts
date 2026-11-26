@@ -32,7 +32,8 @@ export type ContextFreshnessCode =
   | "content-changed"
   | "sources-changed"
   | "legacy-baseline-changed"
-  | "orphan-review";
+  | "orphan-review"
+  | "retired-review";
 
 export interface ContextFreshnessIssue {
   key: string;
@@ -161,7 +162,7 @@ export function readState(repo: string): HarnessState | null {
 }
 
 export function writeState(repo: string, state: HarnessState): void {
-  writeText(join(repo, STATE_REL), JSON.stringify(state, null, 2) + "\n");
+  writeText(join(repo, STATE_REL), renderState(state));
 }
 
 function changedSources(before: Record<string, string>, after: Record<string, string>): string[] {
@@ -283,7 +284,20 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
   }
   for (const [key, review] of Object.entries(state?.reviews ?? {})) {
     if (currentKeys.has(key)) continue;
-    if (review.kind !== "knowledge" || !registeredKnowledgeKeys.has(key)) continue;
+    if (review.kind !== "knowledge" || !registeredKnowledgeKeys.has(key)) {
+      // The context itself is gone (module deleted, knowledge unregistered): nothing
+      // can be stale, and sync / upgrade drop the record.
+      issues.push({
+        key,
+        kind: review.kind,
+        target: review.target,
+        severity: "advisory",
+        code: "retired-review",
+        reason: "retired review: manifest 已不再声明这个 context；运行 sync 删除这条记录",
+        changedSources: [],
+      });
+      continue;
+    }
     issues.push({
       key,
       kind: review.kind,
@@ -295,6 +309,34 @@ export function inspectContextFreshness(repo: string, manifest: Manifest): Conte
     });
   }
   return issues;
+}
+
+/**
+ * Drop review records (and legacy baselines) for contexts the manifest no longer
+ * declares at all. A context that is still registered keeps its record, so an
+ * orphan review of a registered knowledge entry stays blocking.
+ */
+export function pruneRetiredReviews(repo: string, manifest: Manifest, state: HarnessState): { state: HarnessState; retired: string[] } {
+  const snapshots = contextSnapshots(repo, manifest);
+  const keys = new Set(snapshots.map((snapshot) => snapshot.key));
+  const legacyKeys = new Set(snapshots.map((snapshot) => snapshot.legacyKey));
+  const registeredKnowledge = new Set((manifest.knowledge ?? []).map(knowledgeKey));
+  const retired: string[] = [];
+  const reviews: Record<string, ContextReviewRecord> = {};
+  for (const [key, review] of Object.entries(state.reviews ?? {})) {
+    if (keys.has(key) || (review.kind === "knowledge" && registeredKnowledge.has(key))) reviews[key] = review;
+    else retired.push(key);
+  }
+  const bindings: HarnessState["bindings"] = {};
+  for (const [key, sources] of Object.entries(state.bindings ?? {})) {
+    if (legacyKeys.has(key)) bindings[key] = sources;
+    else retired.push(`binding:${key}`);
+  }
+  return { state: { ...state, bindings, reviews }, retired: retired.sort() };
+}
+
+export function renderState(state: HarnessState): string {
+  return JSON.stringify(state, null, 2) + "\n";
 }
 
 export interface ContextStateView {

@@ -210,22 +210,29 @@ test("invariants carry the id that scope, routing, and module cards refer to", (
   assert.match(md, /^- `no-console-log`: No console\.log \[enforced\]$/m);
 });
 
-test("dependencies render one item per line, so commas and semicolons inside an item stay readable", () => {
+test("several dependencies render one per line; a single one stays inline", () => {
   const manifest: Manifest = {
     ...base,
-    identity: { ...base.identity, upstream: ["user-service (gRPC; ids, profiles)", "config center"], downstream: ["web, admin"] },
-    modules: [{ name: "api", role: "r", entry: ["src/a.ts"], upstream: ["db; cache"], downstream: ["web"] }],
+    identity: { ...base.identity, upstream: ["user-service (gRPC; ids, profiles)", "config center"], downstream: ["web、admin、ops"] },
+    modules: [{ name: "api", role: "r", entry: ["src/a.ts"], upstream: ["db; cache", "queue"], downstream: ["web"] }],
   };
   const md = renderAgentsMd(manifest);
   assert.match(md, /^Upstream:\n- user-service \(gRPC; ids, profiles\)\n- config center$/m);
-  assert.match(md, /^Downstream:\n- web, admin$/m);
-  assert.match(renderModulesMd(manifest), /^- Upstream:\n  - db; cache\n- Downstream:\n  - web$/m);
+  // One string item (even one that lists several names) is not a one-entry list.
+  assert.match(md, /^Downstream: web、admin、ops$/m);
+  assert.match(renderModulesMd(manifest), /^- Upstream:\n  - db; cache\n  - queue\n- Downstream: web$/m);
 });
 
 test("the AGENTS.md word budget counts repository content, and CJK spacing is not extra words", () => {
   assert.equal(countWords("中文 English 中文"), countWords("中文English中文"));
   assert.equal(countWords("规则： 不要 log token。"), countWords("规则：不要log token。"));
   assert.equal(countWords("plain english words"), 3);
+  // Han / Kana are unspaced: two characters count as one word, so a Chinese paragraph is no longer "one word".
+  assert.equal(countWords("所有生产代码必须有对应的单元测试"), 8);
+  assert.equal(countWords("ひらがなカタカナ"), 4);
+  // Hangul is space-separated and splits like other text; punctuation-only tokens are not words.
+  assert.equal(countWords("한국어 문장 입니다"), 3);
+  assert.equal(countWords("- `rule-a`: keep it | ##"), 3);
   const bare = agentsMdSize({ spec: "ai-harness/v0", identity: { name: "x" } });
   // Fixed Harness text (header, working agreement, map) is not the repository's content.
   assert.ok(bare.words > 150, `${bare.words}`);

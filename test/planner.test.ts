@@ -330,3 +330,33 @@ test("Harness-managed paths are covered by verify, so they are never unmapped or
   );
   assert.deepEqual(owned.affected, ["harness"]);
 });
+
+test("a changed script that a runnable capability executes selects that capability", () => {
+  const m = withModules({
+    capabilities: {
+      test: { run: "bash .agents/checks/go-test.sh ./..." },
+      snapshot_vet: { run: "go vet ./.agents/checks/snapshot" },
+      release: { run: "bash scripts/release.sh", mutating: true },
+      serve: { run: "node scripts/serve.js", background: true },
+      lint: { run: "golangci-lint run ${HARNESS_KIT_BASE:+--new-from-rev=$HARNESS_KIT_BASE}" },
+    },
+    modules: [{ name: "svc", role: "r", entry: [], owns: ["cmd/**"], checks: ["lint"] }],
+  });
+  const p = planChecks(m, [".agents/checks/go-test.sh", ".agents/checks/snapshot/main.go", "scripts/release.sh", "scripts/serve.js"]);
+  assert.deepEqual(
+    p.checks.map((check) => [check.id, check.reason]),
+    [["test", "script:.agents/checks/go-test.sh"], ["snapshot_vet", "script:.agents/checks/snapshot/main.go"]],
+  );
+  // Mutating / background capabilities never run automatically, so they are not selected.
+  assert.ok(!p.checks.some((check) => check.id === "release" || check.id === "serve"));
+});
+
+test("a change made only of Harness paths needs no no_match fallback", () => {
+  const m = withModules({ modules: [{ name: "svc", role: "r", entry: [], owns: ["cmd/**"], checks: ["test"] }] });
+  const harnessOnly = planChecks(m, [".agents/knowledge/domain.md", "AGENTS.md", ".claude/settings.json"]);
+  assert.deepEqual(harnessOnly.checks, []);
+  assert.ok(!harnessOnly.gaps.some((gap) => gap.kind === "no-checks-selected"), JSON.stringify(harnessOnly.gaps));
+  // Any non-Harness file still needs a check.
+  const mixed = planChecks(m, [".agents/knowledge/domain.md", "README.md"]);
+  assert.ok(mixed.gaps.some((gap) => gap.kind === "no-checks-selected"));
+});

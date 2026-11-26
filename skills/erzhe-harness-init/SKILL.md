@@ -49,7 +49,7 @@ harness-kit init --repo .
 
 - 不臆造。先用代码、测试、实际脚本和本地配置取证；只有语义歧义才问用户。
 - 能自动验证的就给命令（`enforcement` / 契约 `snapshot`）；验证不了的诚实标 `manual`，别假装能检查。
-- `AGENTS.md` 有体量预算：150 行，仓库内容（summary、scope、依赖、命令、契约、不变量）500 词；固定的生成头、Working agreement 和 Knowledge & maps 不计，中英文之间加不加空格词数相同。细节沉到 `.agents/` 或注册原地文档，manifest 只写精选。
+- `AGENTS.md` 有体量预算：150 行，仓库内容（summary、scope、依赖、命令、契约、不变量）500 词；固定的生成头、Working agreement 和 Knowledge & maps 不计。汉字和假名每个算半个词，中英文之间加不加空格词数相同，所以中文入口按真实篇幅计数。超了 doctor 会列出最大的几段，通常是不变量：规则只写 Agent 必须遵守的那句话，理由和范围放进 knowledge。细节沉到 `.agents/` 或注册原地文档，manifest 只写精选。
 
 按顺序逐块填 `.agents/manifest.yaml`（schema 见 harness-kit 的 `SPEC-v0.md`）：
 
@@ -61,7 +61,7 @@ harness-kit init --repo .
 6. **modules + validation**：按真实模块边界填写 `role`、具体 `entry` 文件、上下游、`must_know`、`pitfalls`，并完成可执行影响面（旧入口有“不写目录 / 不列清单”类原则时，`role` 只写一句边界说明，不复述目录；可选的 upstream/downstream 模块依赖图默认不写，见 §4 的冲突处理）：
    - 首次接入必须给真实生产面填写 `modules[].owns`、真实覆盖文件填写 `modules[].tests`、真实可运行 capability 填写 `modules[].checks`，再用 `validation.required_coverage` 覆盖真实生产根。
    - 每个 `owns` / `tests` / `required_coverage` 正向 glob 写入前都要对仓库文件清单实际求值并确认命中；不得套用惯例路径、发明 glob 或使用 `!` 否定 glob。真实不存在的测试/检查要报 GAP，不能造一个来过门禁。
-   - Harness 自己的路径（`.agents/**`，含 `.agents/checks/` 下的检查脚本和程序、`AGENTS.md`、`CLAUDE.md`、install-hooks 写的 `.claude/settings.json` / `.cursor/hooks.json` / `.codex/*`）由 `verify` 判定，不会算 unmapped，也不会被 `required_coverage: ["**/*.go"]` 这类 glob 拦住，不必为它们单建模块。真想给检查程序加 `go vet` 之类的 check，再用一个模块 `owns` 它们。这类模块不要把 `.agents/manifest.yaml` 写进 `entry`，否则每次改 manifest 都要重新复核。
+   - Harness 自己的路径（`.agents/**`，含 `.agents/checks/` 下的检查脚本和程序、`AGENTS.md`、`CLAUDE.md`、install-hooks 写的 `.claude/settings.json` / `.cursor/hooks.json` / `.codex/*`）由 `verify` 判定，不会算 unmapped，也不会被 `required_coverage: ["**/*.go"]` 这类 glob 拦住；只改这些路径时，没配 `no_match` 也不会报 no-checks-selected。这只是**免检，不挑选检查**：只为覆盖而建的模块可以删，挂了 `go vet`、`gofmt` 之类 checks 的模块要保留，否则这些检查会静默消失。capability 的 `run` 直接引用的脚本或目录（例如 `bash .agents/checks/go-test.sh`、`go vet ./.agents/checks/snapshot`）改动时，会自动选中该 capability。这类模块不要把 `.agents/manifest.yaml` 写进 `entry`，否则每次改 manifest 都要重新复核。
    - `checks` 只能引用已声明、可终止、无副作用且亲自验证可运行的 capability 动词。用 `plan-checks` / `run-checks` 验证真实改动能选中预期模块、测试与检查。
    - `test_touch` 按实际风险设为 `required | advisory | off`；公共接口、核心业务、安全边界优先 `required`，不能全仓拍脑袋一刀切。
    - 做一次**用户可观察行为的验证面审计**：从真实 scripts、测试配置与测试文件识别浏览器用户流、桌面进程边界、main/preload/renderer/IPC、CLI/API smoke 等项目实际存在的 acceptance/E2E 检查。领域名称由项目定义，Harness 核心不内置 taxonomy。
@@ -126,7 +126,7 @@ harness-kit verify
 
 作为首次接入收尾、在宣称完成之前，由 agent 完成下面的判断和安装，**不让用户选择项目 Hook 或用户分发器等实现方式**。会话门禁是接入的**最后一个改动**：必须在盲审 pass、接管完成、`verify` 到绿之后再装，绝不在等待异步盲审时安装。Claude Code 可能把新装的项目 Hook 热加载进当前会话，也可能到下一个会话才执行。热加载时当前会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动都有 accepted 的 deliver 戳；没热加载时当前会话不会留下 lifecycle 记录。两种情况都一样处理：装完立即运行 `harness-kit deliver --repo .` 拿到 accepted，再结束这一轮，`hookActive` 留到下面的全新会话里证明；被拦截时按拦截文案 deliver 即可，这是门禁在工作，不是故障。
 
-门禁不会无限拦截：registry / npx 不可用时，干净工作区的 Stop 直接放行，有改动时只拦一次；CLI 可用但这个会话交付不了（例如只读的 `claude -p`）时，改动没变就不会连续拦两次，第二次放行并记为 lifecycle `loop-exit`。这两种放行都**不是**交付证据：照实告诉用户改动未验证，`loop-exit` 后 hooks 显示 DEGRADED，直到下一次真实交付。
+门禁不会无限拦截：registry / npx 不可用时，干净工作区的 Stop 直接放行，有改动时只拦一次；runner 文件缺失时，客户端配置里的外层兜底同样每轮只拦一次；CLI 可用但这个会话交付不了（例如只读的 `claude -p`）时，改动没变就不会连续拦两次，第二次放行并记为 lifecycle `loop-exit`。这些放行都**不是**交付证据：照实告诉用户改动未验证，`loop-exit` 后 hooks 显示 DEGRADED，直到下一次真实交付。
 
 1. 只为当前真正使用的客户端安装 SessionStart/Stop hooks，并把 `claude`、`cursor` 或 `codex` 显式传给 `--agents`；不要因为 CLI 支持多个客户端就默认全装。
 2. 运行 `git rev-parse --absolute-git-dir` 和 `git rev-parse --path-format=absolute --git-common-dir`。两个规范化路径相同就是普通 worktree；不同才是真正的 linked worktree。不能只看根目录 `.git` 是否为文件，因为 submodule 也是这种外观。
@@ -164,7 +164,9 @@ Codex 首次信任用户分发器时，agent 先用一句人话说明：“它�
 门禁发现 drift 后由 agent 处理，人只审查最终变更清单：
 
 1. 生成物 drift → `sync`；它仍然只做确定性重生成。
-   升级 Harness 版本用 `upgrade`。它不碰 hooks，所以装过 hooks 的仓库接着要按 upgrade 输出的命令重跑 `install-hooks`，在本会话 deliver，再到一个全新会话里让一处改动经过门禁，证明 `hookActive`。
+   升级 Harness 版本用 `upgrade`：先 `upgrade --check`（退出码 2 表示“有可用升级”，不是失败；输出会列出要刷新的 hook runner 和客户端配置），再在干净工作区 `upgrade`。它在同一事务里原位刷新已安装的项目级 hooks，保留第三方条目，不需要再跑 `install-hooks`；只有 linked worktree 里的 Codex 用户分发器例外，按输出的 `install-hooks ... --allow-user-dispatcher` 命令另跑。升级后在**同一会话**里 deliver 并结束一轮即可：会话开始时由旧 runner 记下的 SessionStart，会在新 runner 执行的 Stop 上重新绑定，`hookActive` 照样能证明；只有客户端配置里有第三方 hook 改动时，才需要到新会话里证明。
+   upgrade 不改手写文件。manifest 和手写文档里钉着旧版本的命令、旧模板留下的裸 `harness-kit verify`，doctor 会按“文件:行”列出，顺手改掉即可（journal ADR 是历史记录，不检查）。
+   删掉模块或注销 knowledge 后，`sync`（或下一次 `upgrade`）会自动删掉它们在 `.agents/.harness-state.json` 里的复核记录，不要手改这个文件。
 2. `derived` knowledge stale → 重读绑定的代码/测试/本地配置，有明确证据才原地更新；`policy` 冲突则修代码，语义不清才问用户。verify / deliver 的 NEXT ACTIONS 会给出一条列出全部待复核项的 `record-context-review` 命令，复核完再运行。
 3. 契约 drift → 只有需求和代码证据都表明有意变更才 accept，并写进审查清单；否则升级。
 4. invariant 违规 → 修代码；确认 policy 已变更后才能改规则。

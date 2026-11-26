@@ -10,6 +10,7 @@ import {
   readState,
   recordContextReview,
   recordContextReviews,
+  pruneRetiredReviews,
   resolveKnowledgePath,
   type ContextFreshnessIssue,
 } from "../src/state";
@@ -140,12 +141,14 @@ test("an implicit-authority review becomes blocking when the registered knowledg
   assert.deepEqual(issue?.changedSources, ["src/api.ts"]);
 
   current.manifest.knowledge = current.manifest.knowledge!.slice(1);
-  assert.ok(
-    !inspectContextFreshness(current.repo, current.manifest).some(
-      (item) => item.key === "knowledge:repo:engineering/handbook/api.md",
-    ),
-    "removing the knowledge registration is an explicit resolution, not a permanent orphan",
+  const retired = inspectContextFreshness(current.repo, current.manifest).filter(
+    (item) => item.key === "knowledge:repo:engineering/handbook/api.md",
   );
+  // Removing the registration is an explicit resolution: the record is retired
+  // (advisory, dropped by sync / upgrade), never a blocking orphan.
+  assert.deepEqual(retired.map((item) => [item.severity, item.code]), [["advisory", "retired-review"]]);
+  const pruned = pruneRetiredReviews(current.repo, current.manifest, readState(current.repo)!);
+  assert.deepEqual(pruned.retired, ["knowledge:repo:engineering/handbook/api.md"]);
 });
 
 test("missing bound sources can neither be recorded nor treated as current", () => {

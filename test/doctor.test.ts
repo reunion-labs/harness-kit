@@ -350,10 +350,54 @@ modules:
 
 test("doctor's AGENTS.md budget counts repository content and says the fixed text is excluded", () => {
   const repo = mkdtempSync(join(tmpdir(), "hk-doctor-budget-"));
-  const rules = Array.from({ length: 60 }, (_, index) => `  - id: rule-${index}\n    rule: 规则 ${index}：每条 rule 都有 several English words to pad the text\n    manual: true`);
+  const rules = Array.from({ length: 40 }, (_, index) => `  - id: rule-${index}\n    rule: 规则 ${index}：每条 rule 都有 several English words to pad the text\n    manual: true`);
   write(repo, ".agents/manifest.yaml", `spec: ai-harness/v0\nidentity: { name: budget, summary: budget fixture }\ninvariants:\n${rules.join("\n")}\n`);
   syncCmd(repo, { createEntry: true });
   const result = capture(() => doctorCmd(repo));
-  assert.match(result.output, /AGENTS\.md \d+ lines \/ \d+ words; repository content \d+ words \(budget 150 lines \/ 500 content words; fixed Harness text not counted\)/);
+  assert.match(result.output, /AGENTS\.md \d+ lines \/ \d+ words; repository content \d+ words \(budget 150 lines \/ 500 content words; fixed Harness text not counted; a Han \/ Kana character is half a word\)/);
   assert.match(result.output, /WARN .*repository content \d+ words.*Move detail into \.agents\/knowledge\//);
+  assert.match(result.output, /largest sections \(words\): Invariants \(must hold\) \d+, .*this is advisory maintenance, not an upgrade step/);
+});
+
+test("doctor pairs a context-freshness ERR with the required review command", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-doctor-next-"));
+  write(repo, "src/api.ts", "export const route = '/v1';\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    "spec: ai-harness/v0\nidentity: { name: next, summary: doctor next action }\nmodules:\n  - name: workflow\n    role: r\n    entry: [src/api.ts]\n",
+  );
+  syncCmd(repo, { createEntry: true });
+  recordContextReview(repo, loadManifest(repo), { module: "workflow", reason: "checked" });
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    "spec: ai-harness/v0\nidentity: { name: next, summary: doctor next action }\nmodules:\n  - name: workflow\n    role: r\n    entry: [src/api.ts]\n    upstream: [a, b]\n",
+  );
+  syncCmd(repo);
+  const result = capture(() => doctorCmd(repo));
+  assert.equal(result.code, 1);
+  assert.match(result.output, /ERR  module:workflow/);
+  assert.match(result.output, /\[REQUIRED \| AGENT\] Re-review 1 stale context item\(s\)/);
+  assert.match(result.output, /run: .*record-context-review --repo \. --module workflow --reason/);
+  assert.doesNotMatch(result.output, /nothing required now/);
+});
+
+test("doctor points at hand-written Harness commands that upgrade cannot rewrite", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-doctor-pins-"));
+  write(repo, ".agents/harness.lock.json", JSON.stringify({ schema: "ai-harness/upgrade-state/v1", package: "@erzhe/harness-kit", version: "0.8.1", manifestSpec: "ai-harness/v0", appliedMigrations: ["upgrade-state-v1"] }) + "\n");
+  write(
+    repo,
+    ".agents/manifest.yaml",
+    "spec: ai-harness/v0\nidentity: { name: pins, summary: pins }\nrouting:\n  - when: any change\n    read: [.agents]\n    verify: ['npx -y @erzhe/harness-kit@0.7.2 deliver']\n",
+  );
+  write(repo, ".agents/adoption.md", "# Tooling adoption log\n\nand only promote a convention to a machine check (`harness-kit verify`) after it actually bites.\n");
+  write(repo, ".agents/knowledge/conventions.md", "Run `npx -y @erzhe/harness-kit@0.8.1 deliver` before finishing.\n");
+  write(repo, ".agents/knowledge/journal/0001.md", "Written for npx -y @erzhe/harness-kit@0.6.0.\n");
+  syncCmd(repo, { createEntry: true });
+  const result = capture(() => doctorCmd(repo));
+  assert.match(result.output, /WARN \.agents\/manifest\.yaml:\d+ pins @erzhe\/harness-kit@0\.7\.2; the lock pins 0\.8\.1/);
+  assert.match(result.output, /WARN \.agents\/adoption\.md:3 names a bare `harness-kit verify`/);
+  assert.doesNotMatch(result.output, /conventions\.md/);
+  assert.doesNotMatch(result.output, /journal\/0001\.md/, "journal ADRs are history");
 });

@@ -86,8 +86,9 @@ function describeLifecycle(lifecycle: LifecycleProof | null): string {
     : "no Stop observed yet";
   const config = lifecycle.configurationCurrent ? "" : "; hook configuration changed since SessionStart";
   const older = lifecycle.evidencePassed && !lifecycle.evidenceCurrent ? "; its gate evidence covers an earlier change" : "";
+  const rebound = lifecycle.stop?.rebound ? "; rebound to the hook configuration refreshed during the session" : "";
   return (
-    `lifecycle: ${lifecycle.agent} session ${lifecycle.hostSessionId} started ${lifecycle.sessionStartedAt}; ${stop}${config}${older}; ` +
+    `lifecycle: ${lifecycle.agent} session ${lifecycle.hostSessionId} started ${lifecycle.sessionStartedAt}; ${stop}${config}${rebound}${older}; ` +
     `hookActive: ${lifecycle.active ? "yes" : "no"}`
   );
 }
@@ -166,12 +167,16 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     session: session.token,
     agent: session.agent,
     createdAt: session.createdAt,
+    // record.createdAt is when this evidence was written; the top-level
+    // createdAt is when the (reused, per-worktree) record file first appeared.
     record: {
       kind: session.agent === "manual" ? "manual-deliver" : "lifecycle",
       session: session.token,
       agent: session.agent,
       hostSessionId: session.agent === "manual" ? null : session.sessionId,
-      createdAt: session.createdAt,
+      deliveredIn: session.lastEvidence.deliveredIn ?? null,
+      createdAt: session.lastEvidence.createdAt,
+      sessionCreatedAt: session.createdAt,
     },
     initialDirty: session.initialDirty,
     evidence: session.lastEvidence,
@@ -231,8 +236,11 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   else err(evidence.status);
   info(`session: ${session.token}`);
   info(`agent: ${session.agent}`);
-  if (session.agent === "manual")
-    info("stamp source: deliver/manual — this record is not hook proof; see \"hook proof\" below");
+  info(`recorded: ${evidence.createdAt}`);
+  if (session.agent === "manual") {
+    const within = evidence.deliveredIn ? `, run inside ${evidence.deliveredIn.agent} session ${evidence.deliveredIn.hostSessionId} (its task record)` : "";
+    info(`stamp source: deliver/manual${within} — this record is not hook proof; see "hook proof" below`);
+  }
   info(`base: ${evidence.requestedBase} -> ${evidence.resolvedBase ?? "empty tree"}`);
   info(`fingerprint: ${evidence.fingerprint}`);
   if (session.initialDirty.length) info(`dirty at task/session start: ${session.initialDirty.join(", ")}`);

@@ -14,7 +14,7 @@ harness-kit 把仓库的工程知识（这是什么、怎么跑、什么不能�
 Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard，然后严格按输出执行。
 ```
 
-入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.8.0`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
+入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.8.1`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
 
 就这一句。Agent 会：
 
@@ -36,7 +36,7 @@ npx -y @erzhe/harness-kit@latest upgrade --repo .
 
 `upgrade` 的目标版本就是你运行的 CLI 版本：用 `@latest` 跟进最新版，或换成 `@<具体版本>` 精确控制。升级后 `.agents/harness.lock.json` 记录新版本，生成的 `AGENTS.md` 里所有 Harness 命令也随之钉到这个版本。
 
-`--check` 完全只读：已是当前版本返回 0，需要升级返回 2，阻塞或状态损坏返回 1。正式 apply 要求目标 Git scope 干净，并把 manifest（仅在迁移确实改变时）、全部生成入口和 `.agents/harness.lock.json` 放进同一仓内文件事务。版本获取由调用方决定，所以公共 npm、公司内部镜像、本地固定二进制都能使用同一接口。`upgrade` 不改 Hook，也不创建还不存在的 `AGENTS.md`；仓库装了 Hook 时，它会在输出和 JSON `notes` 里给出精确的 `install-hooks --stop --agents <客户端>` 命令。重装后在新会话里 deliver 一次，`hookActive` 才会回到 `true`。
+`--check` 完全只读：已是当前版本返回 0，需要升级返回 2（“有可用升级”，不是失败；`set -e` 脚本要单独处理），阻塞或状态损坏返回 1。正式 apply 要求目标 Git scope 干净，并把 manifest（仅在迁移确实改变时）、全部生成入口和 `.agents/harness.lock.json` 放进同一仓内文件事务。版本获取由调用方决定，所以公共 npm、公司内部镜像、本地固定二进制都能使用同一接口。已安装的项目级 Hook（runner 和各客户端的项目配置）在同一个事务里原位刷新，第三方条目保留，`--check` 会把它们列进待更新文件；不新装、不卸载 Hook，也不创建还不存在的 `AGENTS.md`。只有 linked worktree 的 Codex 用户分发器在仓外，upgrade 给出带 `--allow-user-dispatcher` 的精确 `install-hooks` 命令。升级后在同一会话里 deliver 并结束一轮，Stop 会把旧 runner 记下的会话重新绑定到新配置，`hookActive` 就能回到 `true`；只有客户端配置里有第三方 hook 改动时才需要新会话。删掉的模块留下的复核记录随升级（或下一次 `sync`）自动清理；manifest 和手写文档里钉着旧版本的命令不会被改，doctor 会按“文件:行”列出。
 
 `--json` 始终只输出一份 `ai-harness/upgrade-report/v1`，包含 `status`、from/to version、pending/applied migrations、changed/dirty files、errors 和 post-upgrade verification。状态文件同样是确定性协议：`ai-harness/upgrade-state/v1` 只保存 package、version、manifest spec 与已应用 migration IDs；它应随代码提交，没有时间戳，也没有“使用哪些 Agent”的名单。
 
@@ -92,7 +92,7 @@ harness-kit task-start --repo .   # 可选；记住任务起点，覆盖之后�
 harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 ```
 
-`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.8.0 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
+`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.8.1 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
 
 `run-checks`（以及 `deliver`、execute 模式的 Stop）执行 check 时会注入两个环境变量：`HARNESS_KIT_BASE` 是本次评判的 resolved base commit，`HARNESS_KIT_CHANGED_FILES` 指向一个临时文件，每行一个改动路径（target 相对，含已删除路径）。“只检查增量代码”的规则可以直接用它们，例如 `git diff --check ${HARNESS_KIT_BASE:-HEAD}`，或只对清单里的 `.go` 文件跑 gofmt。`verify` 给 invariant / contract 的 `check` 注入同样的变量，所以同一条规则在 verify 和 run-checks 里结果一致；contract `snapshot` 不注入，它要给出整个接口的指纹。`git diff --check` 看不到未跟踪文件，新文件 `git add -N` 或暂存后才会被检查。
 
@@ -118,9 +118,10 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 Stop 不会无限拦截：
 
 - **CLI 拿不到**（registry 或 npx 不可用）：runner 用 `npx --prefer-offline` 调用钉住的版本，缓存里有就不访问网络。仍然失败时，干净工作区（例如只读的 `claude -p` 查询）直接放行并提示；有改动时拦一次，客户端因此重跑的 Stop（`stop_hook_active` / Cursor `loop_count`）放行并标明“未验证”。
+- **runner 文件缺失**：客户端配置里的外层兜底同样只拦一次，客户端重跑时放行。
 - **CLI 能跑但 Agent 交付不了**：拦截后，如果客户端重跑的 Stop 面对的改动与上次拦截时一模一样，就放行并记为 lifecycle `loop-exit`，提示 Agent 在回复里说明“未验证”。`loop-exit` 不算门禁证据，Hook 状态显示 DEGRADED。只要文件有变化，就照常再拦。
 
-每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。判断 Hook 是否生效看 `hookActive` 和 `hookActiveSource`（`lifecycle` 或 `latest-record`）。`evidence` 顶层的 `session` / `agent` 描述最近一条验证记录（常常是手动 deliver，`record.kind: "manual-deliver"`），顶层 `hookConfigurationCurrent` 跟随 hook 证明的来源，与 `lifecycle.configurationCurrent` 一致。`lifecycle.hostSessionId` 是客户端自己的会话 id，可以对照具体对话。会话结束后再改文件，`lifecycle.evidenceCurrent` 变成 `false`，但 Hook 仍是 ACTIVE：它已经证明执行过，新改动由下一次 Stop 判定。
+每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。判断 Hook 是否生效看 `hookActive` 和 `hookActiveSource`（`lifecycle` 或 `latest-record`）。`evidence` 顶层的 `session` / `agent` 描述最近一条验证记录（常常是手动 deliver，`record.kind: "manual-deliver"`），顶层 `hookConfigurationCurrent` 跟随 hook 证明的来源，与 `lifecycle.configurationCurrent` 一致。`lifecycle.hostSessionId` 是客户端自己的会话 id，可以对照具体对话；手动 deliver 记录的 `record.deliveredIn` 写明它是在哪个 Agent 会话里跑的，`record.createdAt` 是这次证据的写入时间（顶层 `createdAt` 是 worktree 的 manual 记录第一次出现的时间）。会话结束后再改文件，`lifecycle.evidenceCurrent` 变成 `false`，但 Hook 仍是 ACTIVE：它已经证明执行过，新改动由下一次 Stop 判定。
 
 Claude Code 可能把新装的项目 Hook 加载进正在运行的会话，也可能到下一个会话才执行，取决于客户端。加载了的话，这个会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动有 accepted 的 deliver 戳；没加载的话，安装会话里不会出现 lifecycle 记录。所以接入时把 `install-hooks` 放在最后一步，装完立即 `deliver`，`hookActive` 一律在全新会话里证明，不要在等待异步盲审时安装。
 
@@ -146,7 +147,7 @@ Claude Code 可能把新装的项目 Hook 加载进正在运行的会话，也�
 | `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE、其他客户端规则文件及它们显式引用的文档证据，规则迁移后的落点（`.agents/` 下的 knowledge / checks / lock / 复核记录等和 `root: repo` 文档），`.agents/` 外的其他接入改动（如 `.prettierignore`），确定性候选，以及把每个路径映射到包内文件的 `INDEX.md`；不改仓内文件。找不到仓内文件的纯路径提及列进绑定 hash 的 `unresolved` 清单，交给盲审确认；契约基线未 accept、复核未记录等“盲审后再做会让回执失效”的步骤会提前警告 |
 | `harness-kit record-adoption-audit` | 把声明的 pass/fail、理由和审计报告 hash 绑定到一版候选 |
 | `harness-kit sync --adopt-existing --candidate ... --audit ...` | 首次接管：只有 live legacy、候选、manifest 和 pass receipt 逐字节一致才事务写入；没有旧入口的仓库也必须核对回执 |
-| `harness-kit doctor [--details]` | 体检：完整性 / 路径引用 / 影响面 glob 零命中（逐个 owns / tests glob）/ 漂移 / 新鲜度 / 体量预算（150 行；仓库内容 500 词，固定的 Working agreement 等不计）；默认折叠无需马上处理的边界 |
+| `harness-kit doctor [--details]` | 体检：完整性 / 路径引用 / 影响面 glob 零命中（逐个 owns / tests glob）/ 漂移 / 新鲜度 / 体量预算（150 行；仓库内容 500 词，固定的 Working agreement 等不计，汉字 / 假名每字算半个词）/ 手写文档里落后于 lock 的钉版本命令；默认折叠无需马上处理的边界 |
 | `harness-kit verify [--json] [--details]` | 门禁：跑不变量 + 契约 + 漂移，给出分类后的下一步；失败非 0 退出 |
 | `harness-kit accept-contract` | 有意变更接口后，记录新的契约指纹为基线 |
 | `harness-kit install-hooks` | 可选装原生 Git hooks；共享 worktree、自定义/全局路径或第三方 hook 时安全拒绝 |

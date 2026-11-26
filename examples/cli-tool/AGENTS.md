@@ -37,8 +37,7 @@ Upstream:
 - Kubernetes API
 - 容器镜像仓库
 
-Downstream:
-- 使用者的终端 / CI 流水线
+Downstream: 使用者的终端 / CI 流水线
 
 ## Commands
 

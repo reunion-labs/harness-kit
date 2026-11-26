@@ -129,19 +129,28 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
     else info(text);
   };
 
+  let evidenceMarked = false;
+  // Attach this verify result to matching manual run-checks evidence. When the
+  // saved evidence is for an earlier change that is information, not a to-do:
+  // deliver refreshes it, and verify alone never stamps.
+  const markEvidence = (passed: boolean): boolean => {
+    if (opts.recordManualEvidence === false || evidenceMarked) return true;
+    evidenceMarked = true;
+    try {
+      const marked = markManualVerifyResult(repo, passed);
+      if (marked === "stale" && hooks.state !== "active")
+        emit("info", "saved delivery evidence covers an earlier change; deliver refreshes it (verify alone never stamps)");
+      return true;
+    } catch (error) {
+      emit("error", `cannot persist manual verify evidence: ${(error as Error).message}`);
+      failures++;
+      return false;
+    }
+  };
+
   const finish = (requestedCode: number): number => {
     let code = requestedCode;
-    if (opts.recordManualEvidence !== false) {
-      try {
-        const marked = markManualVerifyResult(repo, code === 0);
-        if (marked === "stale" && hooks.state !== "active")
-          emit("warn", "manual run-checks evidence no longer matches this change; rerun run-checks before relying on evidence");
-      } catch (error) {
-        emit("error", `cannot persist manual verify evidence: ${(error as Error).message}`);
-        failures++;
-        code = 1;
-      }
-    }
+    if (!markEvidence(code === 0)) code = 1;
     if (opts.json) {
       const report: VerifyReport = {
         schema: "ai-harness/verify-report/v1",
@@ -372,6 +381,7 @@ function verifyInternal(repo: string, opts: VerifyOpts): number {
     } else emit("info", `       details: \`${cli} verify --details\``);
   }
 
+  markEvidence(failures === 0);
   if (failures && !guidance.nextActions.some((action) => action.priority === "required")) {
     guidance.nextActions.unshift({
       id: "fix-verify-failures",
