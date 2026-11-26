@@ -45,6 +45,23 @@ function resolvedHooksDir(repo: string): string {
   return resolve(repo, git(repo, ["rev-parse", "--git-path", "hooks"]));
 }
 
+// A local CLI override goes where the runner starts: after the buffered Stop
+// input, otherwise at the front of the command.
+const BUFFERED_INPUT = `INPUT="$(cat)"; printf '%s' "$INPUT" | `;
+function withLocalCli(command: string, prefix: string): string {
+  return command.startsWith(BUFFERED_INPUT) ? BUFFERED_INPUT + prefix + command.slice(BUFFERED_INPUT.length) : prefix + command;
+}
+
+// Stop commands earlier releases wrote, byte for byte.
+const RUNNER_CALL = (agent: string) => `bash "$(git rev-parse --show-toplevel)/.agents/hooks/harness-agent-hook.sh" ${agent} stop`;
+const OLD_BLOCK = (message: string) => `printf '%s\\n' '{"decision":"block","reason":"${message}"}'`;
+const PINNED_DELIVER_MESSAGE = "harness-kit hook runner is missing or failed; run the pinned deliver command from AGENTS.md manually";
+const STOP_V071 = (agent: string) =>
+  `${RUNNER_CALL(agent)} || ${OLD_BLOCK("harness-kit hook runner is missing or failed; run harness-kit run-checks and harness-kit verify manually")}`;
+const STOP_V080 = (agent: string) => `${RUNNER_CALL(agent)} || ${OLD_BLOCK(PINNED_DELIVER_MESSAGE)}`;
+const STOP_V081 = (agent: string) =>
+  `${RUNNER_CALL(agent)} || grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true' || ${OLD_BLOCK(PINNED_DELIVER_MESSAGE)}`;
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -556,8 +573,8 @@ test("a legal command override invalidates ACTIVE evidence until that exact conf
 
   const path = join(dir, ".codex", "hooks.json");
   const config = JSON.parse(readFileSync(path, "utf8"));
-  config.hooks.SessionStart[0].hooks[0].command = `HARNESS_KIT_CMD=true ${config.hooks.SessionStart[0].hooks[0].command}`;
-  config.hooks.Stop[0].hooks[0].command = `HARNESS_KIT_CMD=true ${config.hooks.Stop[0].hooks[0].command}`;
+  config.hooks.SessionStart[0].hooks[0].command = withLocalCli(config.hooks.SessionStart[0].hooks[0].command, "HARNESS_KIT_CMD=true ");
+  config.hooks.Stop[0].hooks[0].command = withLocalCli(config.hooks.Stop[0].hooks[0].command, "HARNESS_KIT_CMD=true ");
   writeFileSync(path, JSON.stringify(config));
 
   const status = inspectAgentHookStatus(dir);
@@ -574,7 +591,7 @@ test("after an upgrade, an older managed runner is reported as outdated, not dam
   const status = inspectAgentHookStatus(dir);
   assert.equal(status.state, "degraded");
   assert.ok(
-    status.issues.some((issue) => /is a managed runner pinned to @erzhe\/harness-kit@0\.0\.1 .*re-run install-hooks to update it/.test(issue)),
+    status.issues.some((issue) => /is a managed runner pinned to @erzhe\/harness-kit@0\.0\.1 .*upgrade refreshes it in place \(or re-run install-hooks\)/.test(issue)),
     status.issues.join("; "),
   );
   assert.ok(!status.issues.some((issue) => /not a managed executable runner/.test(issue)));
@@ -634,10 +651,18 @@ test("hook status checks the installed runner agent and event for every client",
     }
 
     const localOverride = structuredClone(original);
-    commandAt(localOverride, start).command = `HARNESS_KIT_CMD='node_modules/.bin/harness-kit' ${startCommand}`;
-    commandAt(localOverride, stop).command = `env HARNESS_KIT_CMD="/tmp/local-harness" ${stopCommand}`;
+    commandAt(localOverride, start).command = withLocalCli(startCommand, "HARNESS_KIT_CMD='node_modules/.bin/harness-kit' ");
+    commandAt(localOverride, stop).command = withLocalCli(stopCommand, 'env HARNESS_KIT_CMD="/tmp/local-harness" ');
     writeFileSync(abs, JSON.stringify(localOverride));
     assert.ok(inspectAgentHookStatus(dir).configuredAgents.includes(agent), `${agent}: a legal local CLI override remains recognizable`);
+
+    if (agent !== "cursor") {
+      // Ahead of the buffered input the assignment never reaches the runner.
+      const misplaced = structuredClone(original);
+      commandAt(misplaced, stop).command = `HARNESS_KIT_CMD=true ${stopCommand}`;
+      writeFileSync(abs, JSON.stringify(misplaced));
+      assert.ok(!inspectAgentHookStatus(dir).configuredAgents.includes(agent), `${agent}: an override the runner never sees is not our hook`);
+    }
   }
 });
 
@@ -661,8 +686,8 @@ test("hook status rejects local CLI overrides containing shell expansion or cont
 
   for (const prefix of unsafePrefixes) {
     const config = structuredClone(original);
-    config.hooks.SessionStart[0].hooks[0].command = prefix + start;
-    config.hooks.Stop[0].hooks[0].command = prefix + stop;
+    config.hooks.SessionStart[0].hooks[0].command = withLocalCli(start, prefix);
+    config.hooks.Stop[0].hooks[0].command = withLocalCli(stop, prefix);
     writeFileSync(path, JSON.stringify(config));
     assert.ok(
       !inspectAgentHookStatus(dir).configuredAgents.includes("codex"),
@@ -791,6 +816,14 @@ test("without the CLI, the runner never blocks a clean worktree and blocks a dir
   assert.equal(JSON.parse(quoted.stdout).decision, "block");
 });
 
+test("the runner header names both commands that write it", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
+  const runner = readFileSync(join(dir, ".agents", "hooks", "harness-agent-hook.sh"), "utf8");
+  assert.match(runner.split("\n").slice(0, 4).join("\n"), /install-hooks; upgrade refreshes it in place\. Do not edit/);
+  assert.doesNotMatch(runner, /Re-run install-hooks to update it/);
+});
+
 test("the runner hands the client's hook payload to the CLI unchanged", () => {
   const dir = freshRepo();
   assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
@@ -835,30 +868,81 @@ test("installed outer commands still block when the shared runner is missing", (
   assert.equal(codexStop.status, 0);
   assert.equal(JSON.parse(codexStop.stdout).decision, "block");
 
-  // A missing runner blocks a turn once: the client's re-run is allowed, so it cannot loop.
-  for (const command of [claude.hooks.Stop[0].hooks[0].command, codex.hooks.Stop[0].hooks[0].command]) {
-    const rerun = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":true}', encoding: "utf8" });
-    assert.equal(rerun.status, 0);
-    assert.equal(rerun.stdout, "");
-    const fresh = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":false}', encoding: "utf8" });
-    assert.equal(JSON.parse(fresh.stdout).decision, "block");
-  }
+  // A missing runner blocks a turn once, and the client's re-run is let through
+  // with the same "not verified" notice the runner's own exits give.
+  const stops = { claude: claude.hooks.Stop[0].hooks[0].command, codex: codex.hooks.Stop[0].hooks[0].command };
+  assertStopFallbackBlocksOnce(dir, stops);
 });
 
-test("the 0.8.0 unconditional Stop fallback stays managed and is replaced in place", () => {
+function assertStopFallbackBlocksOnce(dir: string, stops: { claude: string; codex: string }): void {
+  for (const [agent, command] of Object.entries(stops)) {
+    const fresh = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":false}', encoding: "utf8" });
+    assert.equal(fresh.status, 0, agent);
+    assert.equal(JSON.parse(fresh.stdout).decision, "block", agent);
+    assert.match(JSON.parse(fresh.stdout).reason, /pinned deliver command from AGENTS\.md manually\. If it cannot run here.*only once/, agent);
+    const rerun = spawnSync("bash", ["-lc", command], { cwd: dir, input: '{"session_id":"s","stop_hook_active":true}', encoding: "utf8" });
+    assert.equal(rerun.status, 0, agent);
+    if (agent === "claude") {
+      assert.match(JSON.parse(rerun.stdout).systemMessage, /Stop allowed WITHOUT a delivery check, so the change is not verified/);
+      assert.equal(JSON.parse(rerun.stdout).decision, undefined);
+    } else {
+      assert.equal(rerun.stdout, "", agent);
+      assert.match(rerun.stderr, /Stop allowed WITHOUT a delivery check, so the change is not verified/, agent);
+    }
+  }
+}
+
+test("a runner that fails after reading the hook input still blocks a turn only once", () => {
+  const dir = freshRepo();
+  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude", "codex"] }), 0);
+  // What a crash (or a hand-edited runner) looks like to the client config:
+  // stdin consumed, non-zero exit, nothing printed.
+  writeFileSync(join(dir, ".agents", "hooks", "harness-agent-hook.sh"), "#!/bin/sh\ncat >/dev/null\nexit 1\n", { mode: 0o755 });
+  const claude = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8"));
+  const codex = JSON.parse(readFileSync(join(dir, ".codex", "hooks.json"), "utf8"));
+  assertStopFallbackBlocksOnce(dir, { claude: claude.hooks.Stop[0].hooks[0].command, codex: codex.hooks.Stop[0].hooks[0].command });
+});
+
+test("the buffered Stop command hands the runner the client's hook input unchanged", () => {
   const dir = freshRepo();
   assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
-  const settingsPath = join(dir, ".claude", "settings.json");
-  const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  const guarded = settings.hooks.Stop[0].hooks[0].command;
-  settings.hooks.Stop[0].hooks[0].command = guarded.replace(/ \|\| grep -Eq '[^']*'/, "");
-  assert.notEqual(settings.hooks.Stop[0].hooks[0].command, guarded);
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-  assert.deepEqual(inspectAgentHookStatus(dir).configuredAgents, ["claude"]);
-  assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude"] }), 0);
-  const ours = JSON.parse(readFileSync(settingsPath, "utf8")).hooks.Stop.flatMap((group: any) => group.hooks)
-    .filter((hook: any) => /harness-agent-hook\.sh/.test(hook.command));
-  assert.deepEqual(ours.map((hook: any) => hook.command), [guarded]);
+  const fake = join(mkdtempSync(join(tmpdir(), "hk-hooks-fake-cli-")), "echo-stdin.sh");
+  writeFileSync(fake, "#!/bin/sh\ncat\n", { mode: 0o755 });
+  const payload = JSON.stringify({ session_id: "s-1", stop_hook_active: false, last_assistant_message: "a\nb %s \\ done" });
+  const command = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8")).hooks.Stop[0].hooks[0].command;
+  const result = spawnSync("sh", ["-c", command], { cwd: dir, input: payload, encoding: "utf8", env: { ...process.env, HARNESS_KIT_CMD: fake } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${payload}\n`);
+});
+
+test("Stop fallbacks from 0.7.1, 0.8.0 and 0.8.1 stay managed and are replaced in place", () => {
+  for (const [release, legacy] of [["0.7.1", STOP_V071], ["0.8.0", STOP_V080], ["0.8.1", STOP_V081]] as const) {
+    const dir = freshRepo();
+    assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude", "codex"] }), 0);
+    for (const [agent, rel] of [["claude", ".claude/settings.json"], ["codex", ".codex/hooks.json"]] as const) {
+      const path = join(dir, rel);
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      const current = config.hooks.Stop[0].hooks[0].command;
+      config.hooks.Stop[0].hooks[0].command = legacy(agent);
+      assert.notEqual(legacy(agent), current, `${release} ${agent}`);
+      writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
+      // A local override written ahead of these older commands is still theirs.
+      config.hooks.Stop[0].hooks[0].command = `HARNESS_KIT_CMD=true ${legacy(agent)}`;
+      writeFileSync(`${path}.override`, JSON.stringify(config));
+    }
+    assert.deepEqual(inspectAgentHookStatus(dir).configuredAgents, ["claude", "codex"], release);
+    assert.equal(installHooksCmd(dir, { stop: true, agents: ["claude", "codex"] }), 0);
+    for (const rel of [".claude/settings.json", ".codex/hooks.json"]) {
+      const ours = JSON.parse(readFileSync(join(dir, rel), "utf8")).hooks.Stop.flatMap((group: any) => group.hooks)
+        .filter((hook: any) => /harness-agent-hook\.sh/.test(hook.command));
+      assert.equal(ours.length, 1, `${release} ${rel}`);
+      assert.ok(ours[0].command.startsWith(BUFFERED_INPUT), `${release} ${rel}`);
+    }
+    for (const [agent, rel] of [["claude", ".claude/settings.json"], ["codex", ".codex/hooks.json"]] as const) {
+      writeFileSync(join(dir, rel), readFileSync(join(dir, `${rel}.override`), "utf8"));
+      assert.ok(inspectAgentHookStatus(dir).configuredAgents.includes(agent), `${release} ${agent} with a local override`);
+    }
+  }
 });
 
 test("the install-hooks command names the Codex user-dispatcher flag only in a linked worktree", () => {
@@ -880,13 +964,12 @@ test("hook failure fallbacks never offer a bare harness-kit command, and 0.7.1 f
   assert.match(settings.hooks.Stop[0].hooks[0].command, /run the pinned deliver command from AGENTS\.md manually/);
   assert.match(runner, /run npx -y @erzhe\/harness-kit@\d+\.\d+\.\d+\S* deliver manually/);
 
-  // Simulate a 0.7.1 install: same command shape, old fallback wording.
-  const legacy = (command: string) =>
-    command.replace(
-      "run the pinned deliver command from AGENTS.md manually",
-      "run harness-kit run-checks and harness-kit verify manually",
-    );
-  for (const event of ["SessionStart", "Stop"]) settings.hooks[event][0].hooks[0].command = legacy(settings.hooks[event][0].hooks[0].command);
+  // Simulate a 0.7.1 install: the unconditional Stop command and the old fallback wording.
+  settings.hooks.SessionStart[0].hooks[0].command = settings.hooks.SessionStart[0].hooks[0].command.replace(
+    "run the pinned deliver command from AGENTS.md manually",
+    "run harness-kit run-checks and harness-kit verify manually",
+  );
+  settings.hooks.Stop[0].hooks[0].command = STOP_V071("claude");
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   assert.deepEqual(inspectAgentHookStatus(dir).configuredAgents, ["claude"]);
 

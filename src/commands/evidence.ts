@@ -83,7 +83,7 @@ function describeLifecycle(lifecycle: LifecycleProof | null): string {
   if (!lifecycle) return "lifecycle: no SessionStart recorded by an installed hook";
   const stop = lifecycle.stop
     ? `last Stop ${lifecycle.stop.decision} (${lifecycle.stop.mode}, ${lifecycle.stop.reason}) at ${lifecycle.stop.at}`
-    : "no Stop observed yet";
+    : "no Stop observed yet (the Stop that ends this turn judges the stamp and, if it accepts it, proves the hook)";
   const config = lifecycle.configurationCurrent ? "" : "; hook configuration changed since SessionStart";
   const older = lifecycle.evidencePassed && !lifecycle.evidenceCurrent ? "; its gate evidence covers an earlier change" : "";
   const rebound = lifecycle.stop?.rebound ? "; rebound to the hook configuration refreshed during the session" : "";
@@ -159,22 +159,24 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
     return 1;
   }
 
-  // `session` / `agent` / `createdAt` describe this latest validation record,
-  // usually a manual deliver. Hook proof lives in `lifecycle`; `record` says so.
+  // `agent` / `createdAt` describe this evidence: who ran the delivery and when
+  // it was written. A deliver an Agent ran from its own shell lands in the
+  // worktree's one manual record (`session`, shared by every manual deliver
+  // here), but belongs to that Agent session. Hook proof lives in `lifecycle`.
+  const deliveredIn = session.agent === "manual" ? session.lastEvidence.deliveredIn ?? null : null;
+  const deliveredBy = deliveredIn?.agent ?? session.agent;
   const body = {
     schema: "ai-harness/evidence/v1",
     found: true,
     session: session.token,
-    agent: session.agent,
-    createdAt: session.createdAt,
-    // record.createdAt is when this evidence was written; the top-level
-    // createdAt is when the (reused, per-worktree) record file first appeared.
+    agent: deliveredBy,
+    createdAt: session.lastEvidence.createdAt,
     record: {
-      kind: session.agent === "manual" ? "manual-deliver" : "lifecycle",
+      kind: session.agent !== "manual" ? "lifecycle" : deliveredIn ? "agent-deliver" : "manual-deliver",
       session: session.token,
-      agent: session.agent,
-      hostSessionId: session.agent === "manual" ? null : session.sessionId,
-      deliveredIn: session.lastEvidence.deliveredIn ?? null,
+      agent: deliveredBy,
+      hostSessionId: session.agent === "manual" ? deliveredIn?.hostSessionId ?? null : session.sessionId,
+      deliveredIn,
       createdAt: session.lastEvidence.createdAt,
       sessionCreatedAt: session.createdAt,
     },
@@ -234,13 +236,15 @@ export function evidenceCmd(repo: string, opts: EvidenceOpts = {}): number {
   else if (stale) err("stale stamp — the change no longer matches this record");
   else if (evidence.verifyPassed !== true) err("delivery stamp incomplete — matching verify result is missing or failed");
   else err(evidence.status);
-  info(`session: ${session.token}`);
-  info(`agent: ${session.agent}`);
+  info(`session: ${session.token}${session.agent === "manual" ? " (this worktree's deliver record)" : ""}`);
+  info(`agent: ${deliveredBy}`);
   info(`recorded: ${evidence.createdAt}`);
-  if (session.agent === "manual") {
-    const within = evidence.deliveredIn ? `, run inside ${evidence.deliveredIn.agent} session ${evidence.deliveredIn.hostSessionId} (its task record)` : "";
-    info(`stamp source: deliver/manual${within} — this record is not hook proof; see "hook proof" below`);
-  }
+  if (deliveredIn)
+    info(
+      `stamp source: deliver run by ${deliveredIn.agent} session ${deliveredIn.hostSessionId} (its task record scoped this change) — ` +
+        'a command, not hook proof; see "hook proof" below',
+    );
+  else if (session.agent === "manual") info('stamp source: deliver/manual — this record is not hook proof; see "hook proof" below');
   info(`base: ${evidence.requestedBase} -> ${evidence.resolvedBase ?? "empty tree"}`);
   info(`fingerprint: ${evidence.fingerprint}`);
   if (session.initialDirty.length) info(`dirty at task/session start: ${session.initialDirty.join(", ")}`);

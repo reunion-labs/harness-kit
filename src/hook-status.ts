@@ -177,11 +177,14 @@ function runnerReady(repo: string, issues: string[]): boolean {
     const ready = stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o100) !== 0 &&
       withoutOptionalFinalNewline(inspected.content) === withoutOptionalFinalNewline(installedAgentHookRunnerScript());
     if (!ready) {
-      // `upgrade` never touches hooks, so an older managed runner is the normal
-      // state right after an upgrade, not a damaged file.
+      // An older managed runner is an outdated file, not a damaged one: the
+      // CLI is newer than the repository, or it predates upgrade's refresh.
       const pinned = inspected.content.includes(AGENT_HOOK_RUNNER_MARK) ? inspected.content.match(RUNNER_PIN)?.[1] : undefined;
       if (pinned && pinned !== pkg.version)
-        issues.push(`${RUNNER_REL} ${RUNNER_OUTDATED} @erzhe/harness-kit@${pinned} (running ${pkg.version}); re-run install-hooks to update it`);
+        issues.push(
+          `${RUNNER_REL} ${RUNNER_OUTDATED} @erzhe/harness-kit@${pinned} (running ${pkg.version}); ` +
+            "upgrade refreshes it in place (or re-run install-hooks)",
+        );
       else issues.push(`${RUNNER_REL} is not a managed executable runner`);
     }
     return !!ready;

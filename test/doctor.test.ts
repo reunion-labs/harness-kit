@@ -391,7 +391,12 @@ test("doctor points at hand-written Harness commands that upgrade cannot rewrite
     ".agents/manifest.yaml",
     "spec: ai-harness/v0\nidentity: { name: pins, summary: pins }\nrouting:\n  - when: any change\n    read: [.agents]\n    verify: ['npx -y @erzhe/harness-kit@0.7.2 deliver']\n",
   );
-  write(repo, ".agents/adoption.md", "# Tooling adoption log\n\nand only promote a convention to a machine check (`harness-kit verify`) after it actually bites.\n");
+  write(
+    repo,
+    ".agents/adoption.md",
+    "# Tooling adoption log\n\nand only promote a convention to a machine check (`harness-kit verify`) after it actually bites.\n\n" +
+      "## Log\n- 2026-11-25 ran `npx -y @erzhe/harness-kit@0.7.2 evidence` after the upgrade\n\n## Preservation ledger\n- kept `@erzhe/harness-kit@0.6.0` wording\n",
+  );
   write(repo, ".agents/knowledge/conventions.md", "Run `npx -y @erzhe/harness-kit@0.8.1 deliver` before finishing.\n");
   write(repo, ".agents/knowledge/journal/0001.md", "Written for npx -y @erzhe/harness-kit@0.6.0.\n");
   syncCmd(repo, { createEntry: true });
@@ -400,4 +405,5 @@ test("doctor points at hand-written Harness commands that upgrade cannot rewrite
   assert.match(result.output, /WARN \.agents\/adoption\.md:3 names a bare `harness-kit verify`/);
   assert.doesNotMatch(result.output, /conventions\.md/);
   assert.doesNotMatch(result.output, /journal\/0001\.md/, "journal ADRs are history");
+  assert.doesNotMatch(result.output, /adoption\.md:(6|9) /, "the adoption Log and the records after it are history");
 });

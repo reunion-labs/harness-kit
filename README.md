@@ -14,7 +14,7 @@ harness-kit 把仓库的工程知识（这是什么、怎么跑、什么不能�
 Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard，然后严格按输出执行。
 ```
 
-入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.8.1`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
+入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.8.2`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
 
 就这一句。Agent 会：
 
@@ -92,7 +92,7 @@ harness-kit task-start --repo .   # 可选；记住任务起点，覆盖之后�
 harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 ```
 
-`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.8.1 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
+`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.8.2 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
 
 `run-checks`（以及 `deliver`、execute 模式的 Stop）执行 check 时会注入两个环境变量：`HARNESS_KIT_BASE` 是本次评判的 resolved base commit，`HARNESS_KIT_CHANGED_FILES` 指向一个临时文件，每行一个改动路径（target 相对，含已删除路径）。“只检查增量代码”的规则可以直接用它们，例如 `git diff --check ${HARNESS_KIT_BASE:-HEAD}`，或只对清单里的 `.go` 文件跑 gofmt。`verify` 给 invariant / contract 的 `check` 注入同样的变量，所以同一条规则在 verify 和 run-checks 里结果一致；contract `snapshot` 不注入，它要给出整个接口的指纹。`git diff --check` 看不到未跟踪文件，新文件 `git add -N` 或暂存后才会被检查。
 
@@ -118,10 +118,10 @@ Stop Hook（可选）默认 **thin**：没有匹配的 delivery stamp 就 block�
 Stop 不会无限拦截：
 
 - **CLI 拿不到**（registry 或 npx 不可用）：runner 用 `npx --prefer-offline` 调用钉住的版本，缓存里有就不访问网络。仍然失败时，干净工作区（例如只读的 `claude -p` 查询）直接放行并提示；有改动时拦一次，客户端因此重跑的 Stop（`stop_hook_active` / Cursor `loop_count`）放行并标明“未验证”。
-- **runner 文件缺失**：客户端配置里的外层兜底同样只拦一次，客户端重跑时放行。
+- **runner 文件缺失或异常退出**：客户端配置里的外层 Stop 命令先读下 hook 输入再交给 runner，所以兜底同样只拦一次；客户端重跑时放行，并提示改动未验证。
 - **CLI 能跑但 Agent 交付不了**：拦截后，如果客户端重跑的 Stop 面对的改动与上次拦截时一模一样，就放行并记为 lifecycle `loop-exit`，提示 Agent 在回复里说明“未验证”。`loop-exit` 不算门禁证据，Hook 状态显示 DEGRADED。只要文件有变化，就照常再拦。
 
-每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。判断 Hook 是否生效看 `hookActive` 和 `hookActiveSource`（`lifecycle` 或 `latest-record`）。`evidence` 顶层的 `session` / `agent` 描述最近一条验证记录（常常是手动 deliver，`record.kind: "manual-deliver"`），顶层 `hookConfigurationCurrent` 跟随 hook 证明的来源，与 `lifecycle.configurationCurrent` 一致。`lifecycle.hostSessionId` 是客户端自己的会话 id，可以对照具体对话；手动 deliver 记录的 `record.deliveredIn` 写明它是在哪个 Agent 会话里跑的，`record.createdAt` 是这次证据的写入时间（顶层 `createdAt` 是 worktree 的 manual 记录第一次出现的时间）。会话结束后再改文件，`lifecycle.evidenceCurrent` 变成 `false`，但 Hook 仍是 ACTIVE：它已经证明执行过，新改动由下一次 Stop 判定。
+每次 Stop 都会记进该会话的 lifecycle 证据（`evidence --json` 的 `lifecycle`：SessionStart 时间、最近一次 Stop 的模式、放行或拦截、原因）。thin 模式放行时，Stop 接受的 deliver 戳会绑定到这个会话，所以默认安装下，一个全新会话只要让改动经过门禁（deliver 拿到 accepted 后结束一轮），`hookActive` 就会变成 `true`，`doctor` 显示 `ACTIVE`，不需要切换到 execute 模式。干净工作区上的 Stop 只证明 hook 被调用，不算门禁证据。判断 Hook 是否生效看 `hookActive` 和 `hookActiveSource`（`lifecycle` 或 `latest-record`）。`evidence` 顶层的 `agent` / `createdAt` 描述最近一份证据：Agent 在自己的 shell 里跑的 deliver 记为该 Agent（`record.kind: "agent-deliver"`，`record.hostSessionId` 是那次对话），人工终端或 CI 跑的记为 `manual`（`manual-deliver`），`createdAt` 是证据写入时间。顶层 `session` 是存放证据的记录 token，每个 worktree 的 deliver 共用一份，跨会话不变。这些都只是归属，不是 Hook 证明；顶层 `hookConfigurationCurrent` 跟随 hook 证明的来源，与 `lifecycle.configurationCurrent` 一致。`lifecycle.hostSessionId` 是客户端自己的会话 id，可以对照具体对话；这一轮的 Stop 还没跑时 `lifecycle.stop` 为空，结束这一轮后才有 Hook 证明。会话结束后再改文件，`lifecycle.evidenceCurrent` 变成 `false`，但 Hook 仍是 ACTIVE：它已经证明执行过，新改动由下一次 Stop 判定。
 
 Claude Code 可能把新装的项目 Hook 加载进正在运行的会话，也可能到下一个会话才执行，取决于客户端。加载了的话，这个会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动有 accepted 的 deliver 戳；没加载的话，安装会话里不会出现 lifecycle 记录。所以接入时把 `install-hooks` 放在最后一步，装完立即 `deliver`，`hookActive` 一律在全新会话里证明，不要在等待异步盲审时安装。
 

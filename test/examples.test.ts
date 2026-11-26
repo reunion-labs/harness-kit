@@ -88,3 +88,12 @@ test("examples render a single dependency inline and several one per line", () =
     }
   }
 });
+
+test("examples name both commands that write .agents/hooks/", () => {
+  for (const name of ["cli-tool", "demo-run", "electron-app", "frontend-spa", "npm-lib"]) {
+    const agents = readFileSync(join(ROOT, "examples", name, "AGENTS.md"), "utf8");
+    // Since 0.8.1 upgrade refreshes installed hooks in place; install-hooks alone is no longer the whole story.
+    assert.match(agents, /`\.agents\/hooks\/` is written by `install-hooks` and refreshed by `upgrade`\./, name);
+    assert.doesNotMatch(agents, /`\.agents\/hooks\/` belongs to `install-hooks`/, name);
+  }
+});

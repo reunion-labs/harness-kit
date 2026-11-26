@@ -287,14 +287,17 @@ test("upgrade refreshes managed project hooks in the same transaction and keeps 
   const repo = fixture({ lock });
   const install = spawnSync(TSX, [CLI, "install-hooks", "--repo", repo, "--stop", "--agents", "claude"], { encoding: "utf8" });
   assert.equal(install.status, 0, install.stdout);
-  // Make it look like an older release installed them: older runner pin, unconditional Stop fallback,
+  // Make it look like an older release installed them: older runner pin, the 0.8.1 Stop command,
   // and a third-party hook next to ours.
   const runnerPath = join(repo, ".agents/hooks/harness-agent-hook.sh");
   const currentRunner = readFileSync(runnerPath, "utf8");
   writeFileSync(runnerPath, currentRunner.replace(/@erzhe\/harness-kit@\d+\.\d+\.\d+[^ ]*/g, "@erzhe/harness-kit@0.0.1"));
   const settingsPath = join(repo, ".claude/settings.json");
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  settings.hooks.Stop[0].hooks[0].command = settings.hooks.Stop[0].hooks[0].command.replace(/ \|\| grep -Eq '[^']*'/, "");
+  settings.hooks.Stop[0].hooks[0].command =
+    `bash "$(git rev-parse --show-toplevel)/.agents/hooks/harness-agent-hook.sh" claude stop || ` +
+    `grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true' || ` +
+    `printf '%s\\n' '{"decision":"block","reason":"harness-kit hook runner is missing or failed; run the pinned deliver command from AGENTS.md manually"}'`;
   settings.hooks.Stop.unshift({ hooks: [{ type: "command", command: "echo third-party" }] });
   settings.permissions = { allow: ["Bash(ls:*)"] };
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
@@ -318,7 +321,8 @@ test("upgrade refreshes managed project hooks in the same transaction and keeps 
   assert.equal(stopCommands.filter((command: string) => command === "echo third-party").length, 1);
   const ours = stopCommands.filter((command: string) => /harness-agent-hook\.sh/.test(command));
   assert.equal(ours.length, 1);
-  assert.match(ours[0], /\|\| grep -Eq '"stop_hook_active"/);
+  assert.ok(ours[0].startsWith(`INPUT="$(cat)"; printf '%s' "$INPUT" | bash `), ours[0]);
+  assert.match(ours[0], /\|\| \{ printf '%s' "\$INPUT" \| grep -Eq '"stop_hook_active"/);
   const doctor = spawnSync(TSX, [CLI, "doctor", "--repo", repo], { encoding: "utf8" });
   assert.doesNotMatch(doctor.stdout, /pinned to @erzhe\/harness-kit@0\.0\.1/);
 });

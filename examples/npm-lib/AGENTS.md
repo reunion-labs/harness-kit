@@ -8,7 +8,7 @@
 
 Harness CLI: `npx -y @erzhe/harness-kit@latest <command>` (no global install; no `.agents/harness.lock.json` version pin yet).
 
-Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` (plus `.agents/routing.md` / `.agents/modules.md` when declared). Edit the manifest, then run `npx -y @erzhe/harness-kit@latest sync`. Knowledge is hand-authored; `.agents/hooks/` belongs to `install-hooks`.
+Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` (plus `.agents/routing.md` / `.agents/modules.md` when declared). Edit the manifest, then run `npx -y @erzhe/harness-kit@latest sync`. Knowledge is hand-authored; `.agents/hooks/` is written by `install-hooks` and refreshed by `upgrade`.
 
 Before you touch code:
 1. Post a **Task Brief**: what changes, change-type, files/layers touched, how you'll verify.

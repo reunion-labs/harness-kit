@@ -126,7 +126,7 @@ harness-kit verify
 
 作为首次接入收尾、在宣称完成之前，由 agent 完成下面的判断和安装，**不让用户选择项目 Hook 或用户分发器等实现方式**。会话门禁是接入的**最后一个改动**：必须在盲审 pass、接管完成、`verify` 到绿之后再装，绝不在等待异步盲审时安装。Claude Code 可能把新装的项目 Hook 热加载进当前会话，也可能到下一个会话才执行。热加载时当前会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动都有 accepted 的 deliver 戳；没热加载时当前会话不会留下 lifecycle 记录。两种情况都一样处理：装完立即运行 `harness-kit deliver --repo .` 拿到 accepted，再结束这一轮，`hookActive` 留到下面的全新会话里证明；被拦截时按拦截文案 deliver 即可，这是门禁在工作，不是故障。
 
-门禁不会无限拦截：registry / npx 不可用时，干净工作区的 Stop 直接放行，有改动时只拦一次；runner 文件缺失时，客户端配置里的外层兜底同样每轮只拦一次；CLI 可用但这个会话交付不了（例如只读的 `claude -p`）时，改动没变就不会连续拦两次，第二次放行并记为 lifecycle `loop-exit`。这些放行都**不是**交付证据：照实告诉用户改动未验证，`loop-exit` 后 hooks 显示 DEGRADED，直到下一次真实交付。
+门禁不会无限拦截：registry / npx 不可用时，干净工作区的 Stop 直接放行，有改动时只拦一次；runner 文件缺失或异常退出时，客户端配置里的外层兜底同样每轮只拦一次，放行时提示未验证；CLI 可用但这个会话交付不了（例如只读的 `claude -p`）时，改动没变就不会连续拦两次，第二次放行并记为 lifecycle `loop-exit`。这些放行都**不是**交付证据：照实告诉用户改动未验证，`loop-exit` 后 hooks 显示 DEGRADED，直到下一次真实交付。
 
 1. 只为当前真正使用的客户端安装 SessionStart/Stop hooks，并把 `claude`、`cursor` 或 `codex` 显式传给 `--agents`；不要因为 CLI 支持多个客户端就默认全装。
 2. 运行 `git rev-parse --absolute-git-dir` 和 `git rev-parse --path-format=absolute --git-common-dir`。两个规范化路径相同就是普通 worktree；不同才是真正的 linked worktree。不能只看根目录 `.git` 是否为文件，因为 submodule 也是这种外观。

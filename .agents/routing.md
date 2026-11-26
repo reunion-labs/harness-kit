@@ -39,7 +39,7 @@ Find the change-type that matches your task and follow that row before editing.
 - Entry points: `src/upgrade.ts`, `src/commands/upgrade.ts`
 - Do NOT assume: upgrade 以当前运行 CLI 版本为目标，不访问 npm、CI 或代码托管平台
 - Do NOT assume: 迁移状态必须确定、可提交且不记录时间戳或 Agent 名单
-- Do NOT assume: upgrade 的仓内文件共用一次事务；Hook 横跨仓库、Git admin 和用户目录，必须留给 install-hooks 显式处理
+- Do NOT assume: upgrade 的仓内文件共用一次事务，已装的项目级 Hook 也在其中原位刷新；新装 / 卸载 Hook 和 linked-worktree Codex 分发器（Git admin、用户目录）仍留给 install-hooks
 - Do NOT assume: 可选产品能力不能伪装成所有仓库必跑的结构迁移
 - Minimum verification: `test`, `typecheck`
 
