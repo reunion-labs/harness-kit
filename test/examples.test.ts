@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 import { doctorCmd } from "../src/commands/doctor";
 import { loadManifest } from "../src/manifest";
 
@@ -96,4 +99,34 @@ test("examples name both commands that write .agents/hooks/", () => {
     assert.match(agents, /`\.agents\/hooks\/` is written by `install-hooks` and refreshed by `upgrade`\./, name);
     assert.doesNotMatch(agents, /`\.agents\/hooks\/` belongs to `install-hooks`/, name);
   }
+});
+
+const PINNED_CI_CALL = 'npx -y "@erzhe/harness-kit@${version}" ci';
+const LOCK_VERSION_LINE = `version="$(node -p "require('./.agents/harness.lock.json').version")"`;
+
+test("the CI examples check out full history, use Node 18+, and call ci pinned by the lock", () => {
+  const github = YAML.parse(readFileSync(join(ROOT, "examples", "ci", "github-actions.yml"), "utf8"));
+  assert.ok(github.on.pull_request !== undefined && github.on.push, "pull requests and pushes");
+  const steps: any[] = github.jobs.harness.steps;
+  assert.equal(steps.find((step) => String(step.uses).startsWith("actions/checkout@")).with["fetch-depth"], 0);
+  assert.ok(Number(steps.find((step) => String(step.uses).startsWith("actions/setup-node@")).with["node-version"]) >= 18);
+  const githubRun = String(steps.at(-1).run);
+  assert.ok(githubRun.includes(LOCK_VERSION_LINE) && githubRun.includes(PINNED_CI_CALL), githubRun);
+
+  const gitlab = YAML.parse(readFileSync(join(ROOT, "examples", "ci", "gitlab-ci.yml"), "utf8")).harness;
+  assert.ok(Number(/^node:(\d+)/.exec(gitlab.image)?.[1]) >= 18, gitlab.image);
+  assert.equal(gitlab.variables.GIT_DEPTH, "0");
+  assert.ok(gitlab.rules.some((rule: any) => /merge_request_event/.test(rule.if)));
+  assert.deepEqual(gitlab.script.slice(-2), [LOCK_VERSION_LINE, PINNED_CI_CALL]);
+
+  for (const text of [githubRun, gitlab.script.join("\n")]) assert.doesNotMatch(text, /@latest|harness-kit ci(?!")/);
+});
+
+test("the CI examples' version line reads the lock", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hk-ci-example-"));
+  mkdirSync(join(repo, ".agents"));
+  writeFileSync(join(repo, ".agents", "harness.lock.json"), JSON.stringify({ version: "9.8.7" }) + "\n");
+  const result = spawnSync("sh", ["-c", `${LOCK_VERSION_LINE}; printf '%s' "$version"`], { cwd: repo, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "9.8.7");
 });

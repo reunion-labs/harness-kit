@@ -1,0 +1,42 @@
+# Harness merge gate for GitHub Actions. Copy to .github/workflows/harness.yml.
+#
+# `harness-kit ci` resolves the base itself: GITHUB_BASE_REF on pull_request,
+# the pushed range (the event's `before`) on push. It runs run-checks + verify
+# against the merge-base and exits 0 (passed), 1 (checks or verify failed), or
+# 2 (configuration / environment error, e.g. no base or unusable history).
+name: harness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the merge-base is local. With the default depth of 1,
+          # ci fetches the base branch and deepens the checkout itself (it reuses
+          # the credentials actions/checkout persists).
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # harness-kit needs Node.js 18 or later.
+          node-version: 22
+
+      # run-checks executes the repository's own capabilities (tests, typecheck, ...):
+      # install whatever they need first. Replace with your setup.
+      - run: npm ci
+
+      - name: harness-kit ci
+        # Pin the CLI to the version in .agents/harness.lock.json, like every
+        # other Harness command in this repository.
+        run: |
+          version="$(node -p "require('./.agents/harness.lock.json').version")"
+          npx -y "@erzhe/harness-kit@${version}" ci

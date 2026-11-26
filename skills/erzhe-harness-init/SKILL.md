@@ -61,7 +61,7 @@ harness-kit init --repo .
 6. **modules + validation**：按真实模块边界填写 `role`、具体 `entry` 文件、上下游、`must_know`、`pitfalls`，并完成可执行影响面（旧入口有“不写目录 / 不列清单”类原则时，`role` 只写一句边界说明，不复述目录；可选的 upstream/downstream 模块依赖图默认不写，见 §4 的冲突处理）：
    - 首次接入必须给真实生产面填写 `modules[].owns`、真实覆盖文件填写 `modules[].tests`、真实可运行 capability 填写 `modules[].checks`，再用 `validation.required_coverage` 覆盖真实生产根。
    - 每个 `owns` / `tests` / `required_coverage` 正向 glob 写入前都要对仓库文件清单实际求值并确认命中；不得套用惯例路径、发明 glob 或使用 `!` 否定 glob。真实不存在的测试/检查要报 GAP，不能造一个来过门禁。
-   - Harness 自己的路径（`.agents/**`，含 `.agents/checks/` 下的检查脚本和程序、`AGENTS.md`、`CLAUDE.md`、install-hooks 写的 `.claude/settings.json` / `.cursor/hooks.json` / `.codex/*`）由 `verify` 判定，不会算 unmapped，也不会被 `required_coverage: ["**/*.go"]` 这类 glob 拦住；只改这些路径时，没配 `no_match` 也不会报 no-checks-selected。这只是**免检，不挑选检查**：只为覆盖而建的模块可以删，挂了 `go vet`、`gofmt` 之类 checks 的模块要保留，否则这些检查会静默消失。capability 的 `run` 直接引用的脚本或目录（例如 `bash .agents/checks/go-test.sh`、`go vet ./.agents/checks/snapshot`）改动时，会自动选中该 capability。这类模块不要把 `.agents/manifest.yaml` 写进 `entry`，否则每次改 manifest 都要重新复核。
+   - Harness 自己的路径（`.agents/**`，含 `.agents/checks/` 下的检查脚本和程序、`AGENTS.md`、`CLAUDE.md`、install-hooks 写的 `.claude/settings.json` / `.cursor/hooks.json` / `.codex/*`）由 `verify` 判定，不会算 unmapped，也不会被 `required_coverage: ["**/*.go"]` 这类 glob 拦住；只改这些路径时，没配 `no_match` 也不会报 no-checks-selected。这只是**免检，不挑选检查**：只为覆盖而建的模块可以删，挂了 `go vet`、`gofmt` 之类 checks 的模块要保留，否则这些检查会静默消失。capability 的 `run` 直接引用的脚本或目录（例如 `bash .agents/checks/go-test.sh`、`go vet ./.agents/checks/snapshot`）改动时，会自动选中该 capability（只限 manifest 里当作 check 用到的 capability；setup、启动器、发布脚本不算）。这类模块不要把 `.agents/manifest.yaml` 写进 `entry`，否则每次改 manifest 都要重新复核。
    - `checks` 只能引用已声明、可终止、无副作用且亲自验证可运行的 capability 动词。用 `plan-checks` / `run-checks` 验证真实改动能选中预期模块、测试与检查。
    - `test_touch` 按实际风险设为 `required | advisory | off`；公共接口、核心业务、安全边界优先 `required`，不能全仓拍脑袋一刀切。
    - 做一次**用户可观察行为的验证面审计**：从真实 scripts、测试配置与测试文件识别浏览器用户流、桌面进程边界、main/preload/renderer/IPC、CLI/API smoke 等项目实际存在的 acceptance/E2E 检查。领域名称由项目定义，Harness 核心不内置 taxonomy。
@@ -157,7 +157,12 @@ Codex 首次信任用户分发器时，agent 先用一句人话说明：“它�
 
 若 `doctor` / `verify` 输出 `install-lifecycle-hooks`、`repair-lifecycle-hooks` 或 `prove-lifecycle-hooks`，这不是给用户看的建议，而是你在宣布接入完成前必须自动收敛的动作。只有安装器发现未知第三方结构，或宿主 UI 必须批准精确的 managed dispatcher 时，才暂停并请用户确认。
 
-原生 Git hooks（pre-commit / pre-push）是**可选且仅限确认安全时**的增强：不得覆盖既有 hooks，不得改变未知的团队工作流，也不能作为首次接入完成条件。**绝不要指示用户修改 CI。**
+原生 Git hooks（pre-commit / pre-push）是**可选且仅限确认安全时**的增强：不得覆盖既有 hooks，不得改变未知的团队工作流，也不能作为首次接入完成条件。
+
+**接入时不改 CI，也不要指示用户修改 CI**：CI 配置属于团队。`harness-kit ci` 是 MR / PR 上的合码门禁，会话 Hook 和 deliver 只是本地快速反馈；它自己从 CI 环境变量找 base，退出码 0 通过 / 1 改动没通过 / 2 配置或环境错误。只有用户明确要求接入 CI 时，才加一个 job，内容如下：
+- 完整历史 checkout（GitHub `fetch-depth: 0`，GitLab `GIT_DEPTH: "0"`）；
+- Node.js 18+，并装好检查需要的依赖；
+- 运行 `npx -y "@erzhe/harness-kit@<版本>" ci`，版本从 `.agents/harness.lock.json` 读。
 
 ## 7. 日常维护 / 自愈
 

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coveringStampEvidence, resolveChangeScope, startTaskRecord, readTaskRecord } from "../src/delivery";
+import { ciCmd } from "../src/commands/ci";
 import { DELIVER_NOT_ADOPTED_EXIT_CODE, deliverCmd } from "../src/commands/deliver";
 import { syncCmd } from "../src/commands/sync";
 import { verifyCmd } from "../src/commands/verify";
@@ -215,6 +216,34 @@ test("deliver accepts a task whose base already had stale context and lists it a
   const strict = captureJson(() => verifyCmd(repo, { json: true, recordManualEvidence: false }));
   assert.equal(strict.code, 1);
   assert.ok(strict.json.context.some((issue: any) => issue.key === POLICY_KEY && !issue.inherited));
+});
+
+test("the CI gate judges a change the way deliver does, from the same base, without deliver's local state", () => {
+  const repo = staleBaseFixture();
+  const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+  write(repo, "src/other.ts", "export const other = 1;\n");
+  write(repo, "test/other.test.ts", "// covers other\n");
+  commit(repo, "feature");
+
+  // Staleness already on the base is the target branch's maintenance in both gates.
+  const gate = captureJson(() => ciCmd(repo, { base, fetch: false, json: true, env: {} }));
+  assert.equal(gate.code, 0, JSON.stringify(gate.json.errors));
+  assert.equal(gate.json.base.mergeBase, base);
+  assert.ok(gate.json.verify.context.some((issue: any) => issue.key === POLICY_KEY && issue.inherited));
+  const local = captureJson(() => deliverCmd(repo, { base, json: true }));
+  assert.equal(local.json.status, "accepted");
+  assert.equal(local.json.fingerprint, gate.json.runChecks.fingerprint, "same change, same fingerprint");
+  assert.deepEqual(local.json.runChecks.checks.map((check: any) => check.id), gate.json.checks.map((check: any) => check.id));
+
+  // A failing check fails both; ci never reads the stamp deliver just wrote.
+  process.env.HK_TEST_FAIL = "1";
+  try {
+    const failing = captureJson(() => ciCmd(repo, { base, fetch: false, json: true, env: {} }));
+    assert.equal(failing.code, 1);
+    assert.equal(captureJson(() => deliverCmd(repo, { base, json: true })).json.status, "needs-work");
+  } finally {
+    delete process.env.HK_TEST_FAIL;
+  }
 });
 
 test("deliver keeps staleness the task introduced blocking while still separating the inherited part", () => {

@@ -39,6 +39,11 @@ export interface RunChecksOpts {
   session?: string;
   /** When true, clean worktree is no-change without manual-base-required. */
   allowEmptyAsNoChange?: boolean;
+  /**
+   * false: judge only — no manual session, no stored waivers, no evidence
+   * (the CI gate, whose result lives in the CI job, never in local state).
+   */
+  record?: boolean;
 }
 
 interface Failure {
@@ -331,7 +336,7 @@ export function runChecksCmd(repo: string, opts: RunChecksOpts): number {
     });
   }
 
-  if (!session && changes.fingerprint) {
+  if (!session && changes.fingerprint && opts.record !== false) {
     try {
       session = manualValidationSession(repo, changes.resolvedBase, changes.fingerprint);
     } catch (error) {

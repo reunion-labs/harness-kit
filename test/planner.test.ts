@@ -339,16 +339,21 @@ test("a changed script that a runnable capability executes selects that capabili
       release: { run: "bash scripts/release.sh", mutating: true },
       serve: { run: "node scripts/serve.js", background: true },
       lint: { run: "golangci-lint run ${HARNESS_KIT_BASE:+--new-from-rev=$HARNESS_KIT_BASE}" },
+      // Not a check anywhere: a development launcher that needs arguments.
+      cli: { run: "pnpm exec tsx src/cli.ts" },
     },
-    modules: [{ name: "svc", role: "r", entry: [], owns: ["cmd/**"], checks: ["lint"] }],
+    modules: [{ name: "svc", role: "r", entry: [], owns: ["cmd/**"], checks: ["lint", "test"] }],
+    validation: { checksets: { full: { checks: ["snapshot_vet"] } } },
   });
-  const p = planChecks(m, [".agents/checks/go-test.sh", ".agents/checks/snapshot/main.go", "scripts/release.sh", "scripts/serve.js"]);
+  const p = planChecks(m, [".agents/checks/go-test.sh", ".agents/checks/snapshot/main.go", "scripts/release.sh", "scripts/serve.js", "src/cli.ts"]);
   assert.deepEqual(
     p.checks.map((check) => [check.id, check.reason]),
     [["test", "script:.agents/checks/go-test.sh"], ["snapshot_vet", "script:.agents/checks/snapshot/main.go"]],
   );
   // Mutating / background capabilities never run automatically, so they are not selected.
   assert.ok(!p.checks.some((check) => check.id === "release" || check.id === "serve"));
+  // Only capabilities the manifest uses as checks qualify; a launcher naming a changed file is not one.
+  assert.ok(!p.checks.some((check) => check.id === "cli"), JSON.stringify(p.checks));
 });
 
 test("a change made only of Harness paths needs no no_match fallback", () => {

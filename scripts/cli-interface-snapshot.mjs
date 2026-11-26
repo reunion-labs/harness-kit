@@ -12,6 +12,7 @@ const commands = [
   "task",
   "task-start",
   "deliver",
+  "ci",
   "plan-checks",
   "run-checks",
   "evidence",

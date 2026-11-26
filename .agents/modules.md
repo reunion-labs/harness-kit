@@ -48,7 +48,7 @@
 - Test touch: `required`
 - Pitfall: 保持纯函数：不碰 git / fs / 进程，只做 glob 匹配，方便单测
 - Pitfall: HARNESS_COVERED_GLOBS（.agents/**、生成入口、install-hooks 写的客户端配置）由 verify 判定，不算 unmapped / required-unmapped，全是这类路径的改动也不报 no-checks-selected；它们只免检、不挑选检查，模块仍可 owns 它们来加检查
-- Pitfall: 改动的文件被可自动执行的 capability 的 run 命令引用时（脚本或目录前缀）选中该 capability；mutating / background 不选
+- Pitfall: 改动的文件被可自动执行的 capability 的 run 命令引用时（脚本或目录前缀）选中该 capability；mutating / background 不选，manifest 里没当作 check 用到的 capability（setup、开发态启动器、发布脚本）也不选
 
 ## git-diff — 安全收集 committed / staged / unstaged / untracked 改动并生成指纹
 - Entry: `src/git.ts`
@@ -91,6 +91,19 @@
 - Pitfall: 目录没有 manifest 时先找祖先和嵌套 target：祖先存在就要求到 target 根重跑，否则 not-adopted（exit 3），不写任何证据
 - Pitfall: stamp 按 target 读取（inspectDeliveryStamp / coveringStampEvidence 不能用 gitRoot），否则嵌套 target 读到外层 target 的戳
 - Pitfall: task 记录会跨会话留在 Git admin dir；deliver 必须报告它的来源，并在超过 7 天或 base 不是 HEAD 祖先时警告
+
+## ci-gate — CI 合码门禁：从参数 / CI 环境变量确定 base，补齐算 merge-base 所需的历史，在同一 merge-base 上跑 run-checks + verify
+- Entry: `src/commands/ci.ts`
+- Owns (prod): `src/ci.ts`, `src/commands/ci.ts`
+- Tests: `test/ci.test.ts`
+- Checks: `test`, `typecheck`
+- Test touch: `required`
+- Pitfall: base 优先级：--base > HARNESS_KIT_BASE > GitLab MR（DIFF_BASE_SHA；merged_result / merge_train 先用目标分支）> GITHUB_BASE_REF > push / merge queue 的推送区间；都没有就 exit 2，绝不猜 HEAD~1
+- Pitfall: 退出码：0 通过、1 检查或 verify 失败、2 配置 / 环境错误（含命令行用法错误和意外异常）；环境问题不能读成“检查失败”，也不能静默通过
+- Pitfall: 浅克隆要同时加深 base 和 HEAD 两侧：浅 HEAD 没有父提交，base 在本地也算不出 merge-base；逐步 --deepen 后再 --unshallow，仍不行报 shallow-history
+- Pitfall: ci 不读也不写本地 deliver 状态：run-checks 传 record:false，verify 传 recordManualEvidence:false；本地 waiver 在 CI 里不生效
+- Pitfall: 来自参数或环境变量的 base 只接受分支 / ref / commit 形状，拒绝以 - 开头、范围和 refspec；git 一律参数数组 + --end-of-options，fetch 设 GIT_TERMINAL_PROMPT=0
+- Pitfall: 单测要清掉宿主的 GITHUB_* / GITLAB_* / CI_* / HARNESS_KIT_BASE，否则在 CI 里跑测试会被宿主变量带偏
 
 ## agent-hooks — Claude Code / Cursor / Codex 的 SessionStart + Stop 生命周期门禁
 - Entry: `src/commands/hook-event.ts`
@@ -182,7 +195,7 @@
 - Checks: `test`, `typecheck`
 - Pitfall: onboard 打印的命令钉住打印它的那个版本，init 写入 lock 后一律按 lock 调用；不要在 Skill 里写“始终用 @latest”
 
-## examples — 五种接入形态的可读、doctor-healthy 回归样板（含 Electron validation gates）
+## examples — 五种接入形态的可读、doctor-healthy 回归样板（含 Electron validation gates），以及 GitHub Actions / GitLab CI 门禁示例（examples/ci）
 - Entry: `test/examples.test.ts`
 - Owns (prod): `examples/**`
 - Tests: `test/examples.test.ts`

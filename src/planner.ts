@@ -230,10 +230,19 @@ export function planChecks(m: Manifest, input: Array<string | PlannedChange>, op
   for (const item of affectedGates) for (const check of item.gate.checks ?? []) add(check, `gate:${item.id}`);
   for (const c of m.validation?.defaults?.always ?? []) add(c, "always");
   // A changed script or program that a runnable capability executes selects
-  // that capability (mutating/background ones never run automatically).
+  // that capability (mutating/background ones never run automatically). Only
+  // capabilities the manifest uses as checks qualify: a launcher (`tsx src/cli.ts`),
+  // a setup step, or a release script that names a changed file is not a check.
   if (!profile) {
+    const declaredChecks = new Set([
+      ...modules.flatMap((mod) => mod.checks ?? []),
+      ...Object.values(gateDefs).flatMap((gate) => gate.checks ?? []),
+      ...Object.values(m.validation?.checksets ?? {}).flatMap((set) => set.checks ?? []),
+      ...(m.validation?.defaults?.no_match ?? []),
+      ...(m.validation?.defaults?.always ?? []),
+    ]);
     for (const [verb, capability] of Object.entries(m.capabilities ?? {})) {
-      if (capability.mutating || capability.background || typeof capability.run !== "string") continue;
+      if (!declaredChecks.has(verb) || capability.mutating || capability.background || typeof capability.run !== "string") continue;
       const scripts = capabilityScriptPaths(capability.run);
       const hit = changed.find((file) => scripts.some((script) => file === script || file.startsWith(`${script}/`)));
       if (hit) add(verb, `script:${hit}`);

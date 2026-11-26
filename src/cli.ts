@@ -19,6 +19,7 @@ import { prepareAdoptionCmd } from "./commands/prepare-adoption";
 import { recordAdoptionAuditCmd } from "./commands/record-adoption-audit";
 import { upgradeCmd } from "./commands/upgrade";
 import { deliverCmd } from "./commands/deliver";
+import { CI_EXIT, ciCmd } from "./commands/ci";
 import { taskStartCmd, taskStatusCmd } from "./commands/task";
 import { ALL_AGENTS, type AgentTool } from "./commands/stop-hooks";
 
@@ -168,6 +169,23 @@ program
         profile: o.profile,
         json: o.json,
       }),
+    ),
+  );
+
+program
+  .command("ci")
+  .description("merge gate for CI: resolve the base from the CI environment, run run-checks + verify on its merge-base; no local state")
+  .option("-C, --repo <dir>", "target repo dir (default: current directory)")
+  .option("--base <ref>", "target branch or commit to judge against (overrides HARNESS_KIT_BASE and CI variables)")
+  .option("--remote <name>", "remote to fetch the base from and deepen a shallow checkout with", "origin")
+  .option("--no-fetch", "use local history only: never fetch or deepen")
+  .option("--profile <checkset>", "use a validation.checksets entry instead of per-module checks")
+  .option("--json", "machine-readable single-report output", false)
+  // Exit 1 means "the change failed"; a malformed invocation is a configuration error.
+  .exitOverride((error) => process.exit(error.exitCode === 0 ? 0 : CI_EXIT.error))
+  .action((o) =>
+    guard(() =>
+      ciCmd(repoOf(o), { base: o.base, fetch: o.fetch, remote: o.remote, profile: o.profile, json: o.json }),
     ),
   );
 

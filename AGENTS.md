@@ -6,17 +6,17 @@ AI-friendly repo harness CLI —— 把工程知识变成 agent 可消费的 man
 
 ## Working agreement (read first)
 
-Harness CLI: `npx -y @erzhe/harness-kit@0.8.2 <command>` (pinned by `.agents/harness.lock.json`; no global install).
+Harness CLI: `npx -y @erzhe/harness-kit@0.9.0 <command>` (pinned by `.agents/harness.lock.json`; no global install).
 
-Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` (plus `.agents/routing.md` / `.agents/modules.md` when declared). Edit the manifest, then run `npx -y @erzhe/harness-kit@0.8.2 sync`. Knowledge is hand-authored; `.agents/hooks/` is written by `install-hooks` and refreshed by `upgrade`.
+Generated from `.agents/manifest.yaml`, never hand-edit: `AGENTS.md`, `CLAUDE.md`, `.agents/reference.md` (plus `.agents/routing.md` / `.agents/modules.md` when declared). Edit the manifest, then run `npx -y @erzhe/harness-kit@0.9.0 sync`. Knowledge is hand-authored; `.agents/hooks/` is written by `install-hooks` and refreshed by `upgrade`.
 
 Before you touch code:
 1. Post a **Task Brief**: what changes, change-type, files/layers touched, how you'll verify.
 2. Find your change-type in `.agents/routing.md` and read the files it points to; do NOT full-repo grep and guess.
-   Prefer `npx -y @erzhe/harness-kit@0.8.2 task-start` before editing so later commits stay in deliver scope (without it, deliver uses the worktree diff vs HEAD).
+   Prefer `npx -y @erzhe/harness-kit@0.9.0 task-start` before editing so later commits stay in deliver scope (without it, deliver uses the worktree diff vs HEAD).
 
 Before you finish:
-3. Run `npx -y @erzhe/harness-kit@0.8.2 deliver` (checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means done; on `needs-work`, fix and re-run.
+3. Run `npx -y @erzhe/harness-kit@0.9.0 deliver` (checks + verify + stamp). Only `status=accepted` (or clean `no-change`) means done; on `needs-work`, fix and re-run.
 4. In `NEXT ACTIONS` / `nextActions`: do every `required | agent` action yourself; ask the user only for `required | human`; defer `recommended` during unrelated work.
 5. **Never claim a check you didn't run.** Informational boundaries (packaging, real network, prod upload) are not failures; mention them only when relevant.
 6. Record what code can't tell an agent (gotcha, decision, fix): update the registered knowledge source in place, or add to `.agents/knowledge/` (journal ADR for decisions). Never move/copy existing repo docs to fit a folder; skip one-off noise.
@@ -24,7 +24,7 @@ Before you finish:
 ## Scope
 
 In scope:
-- CLI 命令 init / prepare-adoption / record-adoption-audit / sync / upgrade / doctor / verify / task / task-start / deliver / accept-contract / install-hooks / onboard / plan-checks / run-checks / evidence / record-context-review / check-loop（src/）
+- CLI 命令 init / prepare-adoption / record-adoption-audit / sync / upgrade / doctor / verify / task / task-start / deliver / ci / accept-contract / install-hooks / onboard / plan-checks / run-checks / evidence / record-context-review / check-loop（src/）
 - manifest schema + 生成器 + 声明式不变量执行 + 派生新鲜度 + 影响面 planner
 
 Out of scope (do NOT modify here):
@@ -52,7 +52,7 @@ Downstream: 任何被 harness 初始化的仓库
 - `no-raw-console-in-commands`: 命令模块统一走 util 的 ok/err/warn/info，不直接 console.log [enforced]
 - `generated-header-present`: 所有生成物顶部必须带 DO-NOT-EDIT 头（由 GEN_HEADER 保证） [manual]
 
-Run `npx -y @erzhe/harness-kit@0.8.2 verify` to check the enforceable ones.
+Run `npx -y @erzhe/harness-kit@0.9.0 verify` to check the enforceable ones.
 
 ## Knowledge & maps (load on demand)
 
@@ -60,6 +60,6 @@ Run `npx -y @erzhe/harness-kit@0.8.2 verify` to check the enforceable ones.
 - Full commands, environment, and registered knowledge catalog: `.agents/reference.md`
 - Change-type routing (read before editing): `.agents/routing.md`
 - Module map + common pitfalls: `.agents/modules.md`
-- Implement -> verify loop (deep guide): run `npx -y @erzhe/harness-kit@0.8.2 check-loop`
+- Implement -> verify loop (deep guide): run `npx -y @erzhe/harness-kit@0.9.0 check-loop`
 - Tooling adoption log (earn heavier tooling): `.agents/adoption.md`
 - Task playbooks: `.agents/playbooks/`

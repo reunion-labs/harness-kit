@@ -19,6 +19,19 @@ test("run-checks exposes scoped waiver and evidence options", () => {
   assert.match(result.stdout, /--session <token>/);
 });
 
+test("ci is the public CI merge gate with explicit base controls", () => {
+  const help = spawnSync(TSX, [CLI, "ci", "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  for (const flag of [/--base <ref>/, /--remote <name>/, /--no-fetch/, /--profile <checkset>/, /--json/]) assert.match(help.stdout, flag);
+  const root = spawnSync(TSX, [CLI, "--help"], { encoding: "utf8" });
+  assert.match(root.stdout, /\n {2}ci \[options\] +merge gate for CI/);
+  // Exit 1 is reserved for a failed change; a malformed call is a configuration error.
+  assert.equal(spawnSync(TSX, [CLI, "ci", "--unknown-flag"], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync(TSX, [CLI, "ci", "--base"], { encoding: "utf8" }).status, 2);
+  const snapshot = readFileSync(new URL("../scripts/cli-interface-snapshot.mjs", import.meta.url), "utf8");
+  assert.match(snapshot, /"ci",/, "the cli-interface contract covers ci");
+});
+
 test("deliver and task-start are public finish-gate commands", () => {
   const deliver = spawnSync(TSX, [CLI, "deliver", "--help"], { encoding: "utf8" });
   assert.equal(deliver.status, 0);

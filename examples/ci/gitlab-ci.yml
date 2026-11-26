@@ -1,0 +1,28 @@
+# Harness merge gate for GitLab CI. Add this job to .gitlab-ci.yml.
+#
+# `harness-kit ci` resolves the base itself: CI_MERGE_REQUEST_DIFF_BASE_SHA in
+# merge request pipelines (the target branch in merged-result / merge-train
+# pipelines), CI_COMMIT_BEFORE_SHA in branch pipelines. It runs run-checks +
+# verify against the merge-base and exits 0 (passed), 1 (checks or verify
+# failed), or 2 (configuration / environment error, e.g. no base or unusable
+# history).
+harness:
+  # harness-kit needs Node.js 18 or later.
+  image: node:22
+  variables:
+    # Full history, so the merge-base is local. With a shallow clone, ci fetches
+    # the target branch and deepens the checkout itself through the job's
+    # remote, which the runner configures with the job token.
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Pushes only: a scheduled or manual pipeline has no pushed range to judge.
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    # run-checks executes the repository's own capabilities (tests, typecheck, ...):
+    # install whatever they need first. Replace with your setup.
+    - npm ci
+    # Pin the CLI to the version in .agents/harness.lock.json, like every other
+    # Harness command in this repository.
+    - version="$(node -p "require('./.agents/harness.lock.json').version")"
+    - npx -y "@erzhe/harness-kit@${version}" ci

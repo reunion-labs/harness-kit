@@ -124,6 +124,21 @@ test("the repository impact map records the 0.8.2 decisions", () => {
   assert.ok(!upgradeRoute?.dont_assume?.some((rule) => /必须留给 install-hooks 显式处理/.test(rule)));
 });
 
+test("the repository impact map routes CI gate work to its own module", () => {
+  const manifest = loadManifest(REPO);
+  const gate = manifest.modules?.find((item) => item.name === "ci-gate");
+  assert.deepEqual(gate?.owns, ["src/ci.ts", "src/commands/ci.ts"]);
+  assert.equal(gate?.test_touch, "required");
+  assert.ok(gate?.pitfalls?.some((pitfall) => /绝不猜 HEAD~1/.test(pitfall)));
+  assert.ok(gate?.pitfalls?.some((pitfall) => /同时加深 base 和 HEAD 两侧/.test(pitfall)));
+  assert.ok(gate?.pitfalls?.some((pitfall) => /record:false/.test(pitfall)));
+  const route = manifest.routing?.find((item) => item.when.startsWith("改 CI 门禁入口"));
+  assert.deepEqual(route?.entry, ["src/commands/ci.ts"]);
+  assert.ok(manifest.modules?.find((item) => item.name === "examples")?.role.includes("examples/ci"));
+  // ci runs run-checks, so a capability that is not a check must never be picked by a changed script.
+  assert.ok(manifest.modules?.find((item) => item.name === "planner")?.pitfalls?.some((pitfall) => /没当作 check 用到的 capability/.test(pitfall)));
+});
+
 test("SPEC states the exact declarative enforcement scan semantics", () => {
   const spec = readFileSync(join(REPO, "SPEC-v0.md"), "utf8");
   assert.match(spec, /`forbid_pattern` \/ `forbid_import` 是不带 flag 的 JavaScript `RegExp`，对每个文件\*\*逐行\*\*/);

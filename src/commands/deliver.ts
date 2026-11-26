@@ -53,7 +53,7 @@ export interface DeliverReport {
   nextActions: HarnessNextAction[];
 }
 
-function captureStdout(fn: () => number): { code: number; output: string } {
+export function captureStdout(fn: () => number): { code: number; output: string } {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
   (process.stdout as unknown as { write: (chunk: string | Uint8Array) => boolean }).write = (chunk: string | Uint8Array) => {
@@ -71,7 +71,7 @@ function captureStdout(fn: () => number): { code: number; output: string } {
   return { code, output: chunks.join("") };
 }
 
-function parseRunReport(output: string): RunChecksReport | null {
+export function parseRunReport(output: string): RunChecksReport | null {
   try {
     return JSON.parse(output) as RunChecksReport;
   } catch {
@@ -79,7 +79,7 @@ function parseRunReport(output: string): RunChecksReport | null {
   }
 }
 
-function parseVerifyReport(output: string): VerifyReport | null {
+export function parseVerifyReport(output: string): VerifyReport | null {
   try {
     const report = JSON.parse(output) as VerifyReport;
     return report?.schema === "ai-harness/verify-report/v1" ? report : null;

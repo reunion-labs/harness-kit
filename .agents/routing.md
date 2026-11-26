@@ -43,6 +43,13 @@ Find the change-type that matches your task and follow that row before editing.
 - Do NOT assume: 可选产品能力不能伪装成所有仓库必跑的结构迁移
 - Minimum verification: `test`, `typecheck`
 
+## 改 CI 门禁入口（ci）/ CI 示例
+- Read first: `src/ci.ts`, `src/commands/ci.ts`, `src/commands/run-checks.ts`, `src/commands/verify.ts`, `examples/ci/README.md`
+- Entry points: `src/commands/ci.ts`
+- Do NOT assume: ci 的结果只在 CI job 里：不读也不写 deliver 戳、task 记录、waiver 和证据
+- Do NOT assume: 取不到 base、浅克隆加深失败都是配置 / 环境错误（exit 2），不是“没有改动”，也不能退回 HEAD~1
+- Minimum verification: `test`, `typecheck`
+
 ## 改知识新鲜度 / Agent 复核
 - Read first: `src/state.ts`, `src/commands/record-context-review.ts`, `SPEC-v0.md`
 - Entry points: `src/state.ts`

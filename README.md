@@ -14,7 +14,7 @@ harness-kit 把仓库的工程知识（这是什么、怎么跑、什么不能�
 Onboard 本仓库到 harness-kit：跑 npx -y @erzhe/harness-kit@latest onboard，然后严格按输出执行。
 ```
 
-入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.8.2`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
+入口用 `@latest` 拿到最新版；它打印的流程会把之后每条命令钉到这个具体版本（例如 `npx -y @erzhe/harness-kit@0.9.0`），`init` 再把版本写进 `.agents/harness.lock.json`。此后所有命令都按 lock 钉住的版本调用。
 
 就这一句。Agent 会：
 
@@ -92,7 +92,7 @@ harness-kit task-start --repo .   # 可选；记住任务起点，覆盖之后�
 harness-kit deliver --repo .      # 影响面检查 + verify + stamp
 ```
 
-`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.8.2 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
+`harness-kit` 只经 npx 分发，不全局安装，所以 PATH 上通常没有这个命令。生成的 `AGENTS.md` 会把每条 Harness 命令写成 `.agents/harness.lock.json` 钉住的完整调用，例如 `npx -y @erzhe/harness-kit@0.9.0 deliver`，与 Hook runner 的调用形式一致；仓库还没有 lock 时用 `@latest`。`deliver` / `verify` / `doctor` / `evidence` 输出的命令提示、Stop 拦截文案和 Hook 失败兜底也用同一形式，生成文件头部只指向 `AGENTS.md` 里钉版本的 `sync`，不再写裸 `harness-kit`。
 
 `run-checks`（以及 `deliver`、execute 模式的 Stop）执行 check 时会注入两个环境变量：`HARNESS_KIT_BASE` 是本次评判的 resolved base commit，`HARNESS_KIT_CHANGED_FILES` 指向一个临时文件，每行一个改动路径（target 相对，含已删除路径）。“只检查增量代码”的规则可以直接用它们，例如 `git diff --check ${HARNESS_KIT_BASE:-HEAD}`，或只对清单里的 `.go` 文件跑 gofmt。`verify` 给 invariant / contract 的 `check` 注入同样的变量，所以同一条规则在 verify 和 run-checks 里结果一致；contract `snapshot` 不注入，它要给出整个接口的指纹。`git diff --check` 看不到未跟踪文件，新文件 `git add -N` 或暂存后才会被检查。
 
@@ -125,7 +125,19 @@ Stop 不会无限拦截：
 
 Claude Code 可能把新装的项目 Hook 加载进正在运行的会话，也可能到下一个会话才执行，取决于客户端。加载了的话，这个会话没有 SessionStart，下一次 Stop 就要求整个 worktree 改动有 accepted 的 deliver 戳；没加载的话，安装会话里不会出现 lifecycle 记录。所以接入时把 `install-hooks` 放在最后一步，装完立即 `deliver`，`hookActive` 一律在全新会话里证明，不要在等待异步盲审时安装。
 
-诚实边界：没有宿主 Stop / Supervisor 时，会话级强制 Loop 做不到；此时靠 AGENTS 协议 + `deliver` +（可选）Git/CI。Hook 观测（`CONFIGURED/ACTIVE`）是旁路，不是交付成功标准。
+诚实边界：没有宿主 Stop / Supervisor 时，会话级强制 Loop 做不到；此时靠 AGENTS 协议 + `deliver` + CI 门禁（`ci`，见下）。Hook 观测（`CONFIGURED/ACTIVE`）是旁路，不是交付成功标准。
+
+### CI 门禁：合码前的最后一道
+
+`deliver` 和 Stop Hook 是本地的快速反馈，判的是“这个会话里的改动”，戳记在本机。合码要看的是 MR / PR 的 CI：不管改动是谁、在哪做的都会跑，结果挂在 MR 上，Agent 没法自己声称跑过。`harness-kit ci` 是这一层的入口：
+
+- **base 自己找**：`--base` > `HARNESS_KIT_BASE` > GitLab MR（`CI_MERGE_REQUEST_DIFF_BASE_SHA`，merged-result / merge-train 用 `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`）> GitHub `GITHUB_BASE_REF` > 推送区间（GitHub push 事件的 `before`、merge queue 的 `base_sha`、GitLab `CI_COMMIT_BEFORE_SHA`）。都没有就报错（exit 2），不猜 `HEAD~1`。
+- **历史自己补**：先 fetch 目标分支；浅克隆逐步加深 base 与 HEAD 两侧，仍算不出 merge-base 就报错退出，不静默通过。`--no-fetch` 只用本地历史。
+- **一次跑完**：在同一个 merge-base 上跑 run-checks 和 verify。merge-base 上已经过期的知识按 deliver 的规则算目标分支的维护项。
+- **不碰本地状态**：不读也不写 deliver 戳、task 记录和 waiver，本地记的豁免在 CI 里不生效。
+- **退出码**：0 通过，1 检查或 verify 失败，2 配置 / 环境错误（没有 base、浅克隆补不齐、命令行写错等，改动没被判定）。`--json` 给出 base 来源、merge-base、选中的检查和各自结果、verify 结果。
+
+GitHub Actions 和 GitLab CI 的最小配置见 [`examples/ci/`](examples/ci/)：完整历史 checkout、Node.js 18+、先装好检查需要的依赖，再用 lock 里的版本调用 `npx -y "@erzhe/harness-kit@<lock 版本>" ci`。
 
 其它：
 
@@ -141,9 +153,10 @@ Claude Code 可能把新装的项目 Hook 加载进正在运行的会话，也�
 | `harness-kit onboard` | 打印 onboard skill 给 Agent（配合 npx 零安装；打印的流程钉住打印它的版本） |
 | `harness-kit init` | 铺 `.agents/` 骨架 + 起步 manifest：按 `go.mod` / `Cargo.toml` / `package.json`（lockfile + 真实 scripts）推断命令，默认带 `diff_check` 与 `validation.defaults.no_match`，不套 JS 模板 |
 | `harness-kit sync` | manifest → 事务生成 AGENTS.md / CLAUDE.md / reference / routing / modules；不刷新知识复核。**不创建首个 `AGENTS.md`**：已有仓库走下面的盲审接管；仓内没有任何 agent 指引的新仓库用 `sync --create-entry` 显式确认 |
-| `harness-kit upgrade [--check] [--json]` | 把仓库原地升级到当前运行 CLI 版本；确定性迁移 + 生成物刷新 + doctor/verify，不访问 registry/CI/代码托管，也不改 Hook |
+| `harness-kit upgrade [--check] [--json]` | 把仓库原地升级到当前运行 CLI 版本；确定性迁移 + 生成物刷新 + doctor/verify，不访问 registry/CI/代码托管；已安装的项目级 Hook 在同一事务里原位刷新，不新装不卸载 |
 | `harness-kit task-start` | 记录本 worktree 任务 base（可选；SessionStart 也会写） |
 | `harness-kit deliver` | **任务验收入口**：scope → run-checks + verify → stamp |
+| `harness-kit ci [--base <ref>] [--no-fetch] [--json]` | **CI 合码门禁**：从参数或 CI 环境变量确定 base，补齐历史，在 merge-base 上跑 run-checks + verify；不读写本地戳；exit 0 通过 / 1 失败 / 2 配置或环境错误 |
 | `harness-kit prepare-adoption` | 在仓外生成私有 blind-audit bundle；包含旧入口、嵌套 AGENTS/CLAUDE、其他客户端规则文件及它们显式引用的文档证据，规则迁移后的落点（`.agents/` 下的 knowledge / checks / lock / 复核记录等和 `root: repo` 文档），`.agents/` 外的其他接入改动（如 `.prettierignore`），确定性候选，以及把每个路径映射到包内文件的 `INDEX.md`；不改仓内文件。找不到仓内文件的纯路径提及列进绑定 hash 的 `unresolved` 清单，交给盲审确认；契约基线未 accept、复核未记录等“盲审后再做会让回执失效”的步骤会提前警告 |
 | `harness-kit record-adoption-audit` | 把声明的 pass/fail、理由和审计报告 hash 绑定到一版候选 |
 | `harness-kit sync --adopt-existing --candidate ... --audit ...` | 首次接管：只有 live legacy、候选、manifest 和 pass receipt 逐字节一致才事务写入；没有旧入口的仓库也必须核对回执 |

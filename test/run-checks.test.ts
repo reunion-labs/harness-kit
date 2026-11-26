@@ -71,6 +71,24 @@ test("run-checks passes when prod + tests changed and the check succeeds", () =>
   assert.ok(json.passed.includes("test"));
 });
 
+test("run-checks with record:false judges the change but leaves no evidence or waiver behind", () => {
+  const files = {
+    ".agents/manifest.yaml": MANIFEST.replace('checks: ["test"]', 'checks: ["test"]\n    test_touch: required'),
+    "src/api/users.ts": "export const x = 1;\n",
+  };
+  const repo = freshRepo(files);
+  const judged = runJson(repo, { record: false, allowEmptyAsNoChange: true });
+  assert.equal(judged.code, 1, "the same blocking gap a recorded run reports");
+  assert.ok(judged.json.gaps.some((gap: any) => gap.kind === "missing-test-touch" && gap.severity === "blocking"));
+  assert.equal(judged.json.session, "");
+  assert.equal(readLatestValidationSession(repo), null, "no manual session, so no stamp for deliver or a Stop to read");
+
+  // A waiver recorded locally exists only in the recorded run's state; record:false never sees it.
+  const waived = runJson(repo, { waive: "missing-test-touch", where: "api", reason: "local only" });
+  assert.equal(waived.code, 0);
+  assert.equal(runJson(repo, { record: false, allowEmptyAsNoChange: true }).code, 1);
+});
+
 test("run-checks fails (blocking gap) when prod changed but no test touched", () => {
   const repo = freshRepo({
     ".agents/manifest.yaml": MANIFEST.replace('checks: ["test"]', 'checks: ["test"]\n    test_touch: required'),

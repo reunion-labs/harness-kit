@@ -30,6 +30,9 @@ Commands:
   deliver [options]                accept this task change: resolve scope →
                                    run-checks + verify → stamp (preferred finish
                                    gate)
+  ci [options]                     merge gate for CI: resolve the base from the
+                                   CI environment, run run-checks + verify on
+                                   its merge-base; no local state
   run-checks [options]             plan + run resolved checks; record evidence;
                                    nonzero on failure/unresolved blocking gap
   evidence [options]               show the latest durable delivery stamp /
@@ -172,6 +175,24 @@ Options:
   --profile <checkset>  use a validation.checksets entry instead of per-module
                         checks
   --json                machine-readable output (default: false)
+  -h, --help            display help for command
+
+## ci
+Usage: harness-kit ci [options]
+
+merge gate for CI: resolve the base from the CI environment, run run-checks +
+verify on its merge-base; no local state
+
+Options:
+  -C, --repo <dir>      target repo dir (default: current directory)
+  --base <ref>          target branch or commit to judge against (overrides
+                        HARNESS_KIT_BASE and CI variables)
+  --remote <name>       remote to fetch the base from and deepen a shallow
+                        checkout with (default: "origin")
+  --no-fetch            use local history only: never fetch or deepen
+  --profile <checkset>  use a validation.checksets entry instead of per-module
+                        checks
+  --json                machine-readable single-report output (default: false)
   -h, --help            display help for command
 
 ## plan-checks

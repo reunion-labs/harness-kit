@@ -214,7 +214,7 @@ generate:
 6. **AGENTS.md 体量预算**：生成的 `AGENTS.md` 超过 150 行，或**仓库内容**超过 500 词时告警。仓库内容指 manifest 渲染出的部分（标题、summary、Scope、Dependencies、Commands、Contracts、Invariants）；固定的生成头、Working agreement（控制在 240 词以内，有测试守护）和 Knowledge & maps 指引在所有仓库都一样，不计入。词数口径与语言无关：汉字和假名没有空格分词，每个字符算半个词（约两个字对应一个英文词）；其余文本按空白切分，只计含字母或数字的 token（Markdown 列表符、`##`、`|` 不算）；谚文本身用空格分词，照常切分；中英文之间加不加空格结果相同。超出时 doctor 按段列出最大的几段。渐进式披露——入口只指路，细节放 `.agents/` 按需加载。不变量在 AGENTS.md 里带 id（`` `id`: rule [enforced|checked|manual] ``）；上下游两条以上时逐条一行，只有一条时保持 `Upstream: x` 行内。
 7. **Agent Hook 状态**：`CONFIGURED` = 至少一个客户端的有效 SessionStart/Stop 路径完整但尚无当前 Stop 证据；普通 worktree 的有效路径是项目 runner + client config，Codex linked-worktree 还必须包含精确用户入口、版本化分发器和当前 worktree 私有登记。`ACTIVE` = 最近一个非手动 session 的门禁 evidence 在 Stop 接受时通过了两道门（execute 模式是 Stop 自己跑的 `run-checks + verify`，默认 thin 模式是 Stop 接受并绑定的 deliver 戳），且 SessionStart 绑定的完整有效配置指纹仍与现场完全相同。之后再改文件只让这份证据“覆盖的是更早的改动”（`lifecycle.evidenceCurrent: false`），不让状态降级：Hook 已被证明在这版配置下执行过，新改动由下一次 Stop 单独判定。`DEGRADED` = 任一组成缺失或改变（包括合法的本地 CLI override 改值、runner 钉的版本落后于当前 CLI），或 evidence 没通过，或最近一次 thin Stop 因没有匹配的戳而拦截，或最近一次 Stop 以 `loop-exit` 未经验证放行。`evidence.hookActive` 使用同一配置绑定，不能让旧证据替另一版配置背书；无关的第三方用户 Hook 不进入该指纹。状态是可见告警，不冒充 repo 代码门禁。
 
-`harness-kit verify`（本地/CI 均可用的确定性门禁）= 所有 `invariants` 的 `enforcement`/`check` + `contracts` 的 `check`/`snapshot` + "生成物无漂移" + 显式 authority 的 context freshness。任一 blocking 项失败即 fail。`--json` 必须只向 stdout 输出一个 `ai-harness/verify-report/v1` 文档，包含 `ok/failures/manifestErrors/context/hooks/gaps/messages`；即使 matcher、contract baseline 或 hook 配置遇到异常，也只能返回这一个结构化失败文档。
+`harness-kit verify`（本地/CI 均可用的确定性门禁；MR / PR 的 CI 用 `ci`，它在同一 base 上把 run-checks 和 verify 一起跑）= 所有 `invariants` 的 `enforcement`/`check` + `contracts` 的 `check`/`snapshot` + "生成物无漂移" + 显式 authority 的 context freshness。任一 blocking 项失败即 fail。`--json` 必须只向 stdout 输出一个 `ai-harness/verify-report/v1` 文档，包含 `ok/failures/manifestErrors/context/hooks/gaps/messages`；即使 matcher、contract baseline 或 hook 配置遇到异常，也只能返回这一个结构化失败文档。
 
 > **`verify` 不执行任何 `capabilities`**。`capabilities.verify` 只是给人 / agent 看的"如何验证本仓"指针；若真去执行会与自身无限递归。声明为 `mutating` / `background` 的 capability 一律进 GAPS（诚实标注"未在门禁里跑"），不实跑。所以放心声明 `setup: rush install`、`build: go build` 等——`verify` 不会在无网 / 无依赖环境里去跑它们。
 
@@ -256,7 +256,8 @@ GAPS 不计入失败，但会打印数量（`verify: OK (N gap(s))`）。配套*
 | `harness prepare-adoption --out <external-dir>` | 在仓库外生成私有 legacy+candidate 审计 bundle（含 `INDEX.md`），不修改真实入口；列出绑定进 hash 的 unresolved 纯路径提及和应在盲审前完成的步骤（JSON：`unresolvedReferenceCount` / `unresolvedReferences` / `worktreeEvidenceCount` / `preconditions`） |
 | `harness record-adoption-audit --candidate <dir> --verdict pass\|fail --report <file> --reason <text> [--out]` | 生成内容绑定的声明式审计回执；不证明身份或语义质量 |
 | `harness sync [--adopt-existing --candidate <dir> --audit <receipt>] [--create-entry]` | 事务生成工具文件；不创建首个 `AGENTS.md`，除非带精确 pass receipt 的 `--adopt-existing`，或仓内没有任何 agent 指引时的 `--create-entry`；`--adopt-existing` 必须带 candidate+audit，只要写入就要求精确 pass receipt 且应用瞬间重新渲染核对（没有 legacy 入口也一样）；不刷新 context review |
-| `harness upgrade [--check] [--json]` | 升级到当前 CLI 版本；平台无关的确定性迁移、生成物刷新和 doctor/verify；不修改 Hook |
+| `harness upgrade [--check] [--json]` | 升级到当前 CLI 版本；平台无关的确定性迁移、生成物刷新和 doctor/verify；已安装的项目级 Hook 同一事务原位刷新，不新装不卸载 |
+| `harness ci [--base] [--remote] [--no-fetch] [--profile] [--json]` | CI 合码门禁：从参数或 CI 环境变量确定 base，补齐历史，在 merge-base 上跑 run-checks + verify；不读写本地状态；exit 0 通过 / 1 失败 / 2 配置或环境错误 |
 | `harness doctor` | 开发期体检：完整性 + 漂移 + 新鲜度 + 技术债 + 影响面 owns 空匹配 / playbook 存在性 |
 | `harness verify [--json]` | 本地/CI 门禁：跑全部可执行 checks，任一失败即 fail；JSON 为单文档稳定协议 |
 | `harness accept-contract [--id]` | 把当前契约指纹记为已接受基线（有意变更后显式跑，与 sync 分开） |
@@ -282,7 +283,7 @@ GAPS 不计入失败，但会打印数量（`verify: OK (N gap(s))`）。配套*
 | `unmapped-file` | 改动文件不属于任何模块 `owns/tests` | advisory |
 | `unmapped-required-file` | `required_coverage` 范围内的改动未映射 | blocking |
 
-Harness 自己生成、安装或保存的路径（`.agents/**`，包括 check 脚本和程序、`AGENTS.md`、`CLAUDE.md`，以及 install-hooks 写的 `.claude/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json`、`.codex/config.toml`）由 `verify` 判定，而 deliver 总会跑 verify，所以它们既不算 `unmapped-file`，也不算 `unmapped-required-file`（例如 `required_coverage: ["**/*.go"]` 不会命中 `.agents/checks/` 下的 Go 检查程序）。只改这些路径时也不报 `no-checks-selected`（verify 就是它们的检查）。这只是免检、不挑选检查：模块仍可 `owns` 这些路径来附加自己的 checks，删掉这样的模块会让它的 checks 不再被选中；没有模块命中时 `no_match` 照常生效。另外，改动的文件若被一个可自动执行（非 mutating、非 background）的 capability 的 `run` 命令直接引用（脚本路径，或 `go vet ./.agents/checks/x` 这类目录前缀），该 capability 会被选中（reason `script:<path>`），所以改 capability 自己的脚本会跑它。
+Harness 自己生成、安装或保存的路径（`.agents/**`，包括 check 脚本和程序、`AGENTS.md`、`CLAUDE.md`，以及 install-hooks 写的 `.claude/settings.json`、`.cursor/hooks.json`、`.codex/hooks.json`、`.codex/config.toml`）由 `verify` 判定，而 deliver 总会跑 verify，所以它们既不算 `unmapped-file`，也不算 `unmapped-required-file`（例如 `required_coverage: ["**/*.go"]` 不会命中 `.agents/checks/` 下的 Go 检查程序）。只改这些路径时也不报 `no-checks-selected`（verify 就是它们的检查）。这只是免检、不挑选检查：模块仍可 `owns` 这些路径来附加自己的 checks，删掉这样的模块会让它的 checks 不再被选中；没有模块命中时 `no_match` 照常生效。另外，改动的文件若被一个可自动执行（非 mutating、非 background）的 capability 的 `run` 命令直接引用（脚本路径，或 `go vet ./.agents/checks/x` 这类目录前缀），该 capability 会被选中（reason `script:<path>`），所以改 capability 自己的脚本会跑它。只有 manifest 里当作 check 用到的 capability 才算（出现在 `modules[].checks`、`validation.gates` / `checksets` 的 checks 或 `validation.defaults.no_match` / `always` 里）；`setup`、开发态启动器（例如 `tsx src/cli.ts`）、发布脚本之类即使引用了改动的文件也不会被执行。
 | `module-without-tests` | 命中模块没声明 `tests`（无回归网） | 由 test-touch policy 决定 |
 | `missing-test-touch` | 改了模块生产代码但没碰模块测试，或触发 gate 却没碰它独立声明的 acceptance tests | 由对应 test-touch policy 决定 |
 | `no-checks-selected` | 有改动但没解析出任何 check | blocking |
@@ -300,6 +301,32 @@ Harness 自己生成、安装或保存的路径（`.agents/**`，包括 check �
 **`run-checks`（跑 + 留证据）**：先校验 manifest 与 gate 健康状态，再执行选中的 capability。每个 check 进程都拿到它所评判的改动：`HARNESS_KIT_BASE` 是 resolved base commit（没有 base commit 时不设置），`HARNESS_KIT_CHANGED_FILES` 是一个临时文件的路径，每行一个 target 相对的改动路径（含已删除的路径，用前先判断是否存在），跑完即删；外层环境里同名变量不会透传。这样“只检查增量文件”的规则能按任务 diff 实现，不必另建存量基线。`verify` 给 invariant 与 contract 的 `check` 注入同样的两个变量（deliver / execute Stop 用任务 base；独立 verify 用 task 记录，否则 HEAD），所以同一条规则在 verify 与 run-checks 里行为一致；contract `snapshot` 不注入，它必须给出整个接口的指纹。未知、`background`、`mutating` 不是“跳过也算过”，而是 `not-verified`。状态只有：`no-change`、`verified`、`verified-with-advisories`、`verified-with-waivers`、`not-verified`。没有 lifecycle session 时，隐式 HEAD 得到的 `no-change` 不足以证明已 commit 的任务，命令会报 `manual-base-required`；手动工作流应在任务开始时记录 SHA，并传 `--base <task-start-sha>`。结果、命中的 validation gate 与验证计划指纹一起按 worktree/target/session 写入 Git admin dir 下的 `harness-kit/validation/`（文件权限 0600，保留 7 天、最多 100 条），`evidence` 可读取；同一 Git worktree 里的多个 harness target 不共享 latest 指针。计划指纹绑定 profile、affected modules、gates、selected checks、gaps 与 notes；缺少它的旧 evidence 可读取但永远不能重新变绿。
 
 只有确属非目标的**覆盖类缺口**可用 `--waive <kind> --where <scope> --reason <why>` 豁免：`missing-test-touch`、`module-without-tests`、`unmapped-required-file`。`unknown-profile`、`no-checks-selected`、manifest/Git 失败、check 未执行等系统与执行问题不可豁免。豁免绑定“当前改动指纹 + kind + scope”，代码一变自动失效；空理由、不匹配或歧义 scope 都失败。改动指纹包含 exact base、排序后的 layer/status/path、当前内容与 Git 可执行位；submodule 还包含当前 commit 与脏状态。
+
+**`ci`（合码前门禁）**：CI 不管改动是谁、在哪做的都会跑，结果挂在 merge / pull request 上，Agent 没法自己声称跑过。`ci` 是这一层的入口；`deliver` 和 SessionStart / Stop Hook 是本地的快速反馈，二者判同一件事，规则一致。
+
+- **base**：取第一个有值的来源。
+  1. `--base <ref>`
+  2. `HARNESS_KIT_BASE`
+  3. GitLab merge request pipeline：`CI_MERGE_REQUEST_DIFF_BASE_SHA`。merged-result / merge-train pipeline 的 HEAD 是叠在目标分支上的合并提交，这时先用 `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`，没有 diff base 时也用它。
+  4. GitHub `pull_request` / `pull_request_target`：`GITHUB_BASE_REF`
+  5. 推送区间：GitHub `push` 事件 payload（`GITHUB_EVENT_PATH`）里的 `before`，GitHub merge queue 的 `merge_group.base_sha`，或 GitLab CI 里的 `CI_COMMIT_BEFORE_SHA`。全零（新建分支、手动或定时 pipeline）视为没有。
+
+  都没有就是配置错误（exit 2），绝不退回 `HEAD~1` 之类的猜测。base 只接受分支、ref 或 commit 的形状：以 `-` 开头、`a..b` 范围、refspec（含 `:`）一律拒绝。
+- **历史**：
+  - 默认从 `origin` 取 base（`--remote` 可改）。分支每次都 fetch 到 `refs/remotes/<remote>/<branch>`；commit 本地没有时才 fetch。
+  - 浅克隆时，先以 `--depth=50` 取 base，再按 50 / 200 / 1000 逐步 `--deepen` base 与 HEAD 两侧（浅 HEAD 没有父提交，base 在本地也算不出 merge-base），最后 `--unshallow`。
+  - 仍没有 merge-base 时：浅克隆报 `shallow-history`，完整历史报 `no-merge-base`，都是 exit 2。
+  - `--no-fetch` 只用本地历史，不 fetch 也不加深。fetch 设 `GIT_TERMINAL_PROMPT=0`，失败就失败，不等密码。
+- **判定**：run-checks 与 verify 都以算出的 merge-base 为 exact base；check 进程的 `HARNESS_KIT_BASE` 就是这个 merge-base。merge-base 上已存在的 context 过期按 `deliver` 的规则记为目标分支的维护项，不算这次改动的失败（独立 `verify` 仍严格）。检查总预算不设上限，由 CI job 的超时控制。
+- **不碰本地状态**：不读也不写 deliver 戳、task 记录、waiver 和证据，结果只体现在 job 的退出码和输出里。本地 `run-checks --waive` 记下的豁免在 CI 里不生效：要么补测试，要么在 manifest 里调整模块的 test-touch 策略。
+- **退出码**：`0` 通过（选中的检查和 verify 都通过，或相对 merge-base 没有改动）；`1` 改动没通过（检查失败、blocking gap、verify 失败）；`2` 配置 / 环境错误，改动没被判定（没有或非法的 base、base 解析不到、浅克隆加深失败、没有共同历史、目录没有 manifest、命令行用法错误、意外异常）。
+- **JSON**：`--json` 只输出一个 `ai-harness/ci-report/v1` 文档。
+  - 结论：`status`（`passed` / `failed` / `error`）、`ok`、`exitCode`、`errorKind`。
+  - `base`：`source`、`value`、`ref`、`commit`、`mergeBase`、`head`。
+  - `history`：`shallow`、`fetch`（`fetched` / `present` / `skipped` / `failed` / `unavailable`）、`deepened`、`unshallowed`、`commands`、`warnings`。
+  - 结果：`changed`、`checks`（选中的检查及各自结果）、`blockingGaps`、完整的 `runChecks` / `verify` 报告、`verifyPassed`、`errors`。
+
+  CI 配置示例见 `examples/ci/`。
 
 **执行保证（SessionStart + Stop）**：`install-hooks --stop` 同时安装两个时刻。SessionStart 记录 exact HEAD 并自动写任务 base。task 记录会跨会话留在 Git admin dir，deliver 的文本输出和 JSON（`task`、`taskWarnings`）报告它由哪个会话或 `task-start` 写下；记录超过 7 天、或 base 不是 HEAD 的祖先时给出警告，新任务应先 `task-start`。Stop 默认是 **thin** 模式：相对任务 base 有改动时，必须存在与当前改动指纹匹配的 accepted `deliver` 戳，否则拦截；Stop 本身不重跑检查。`HARNESS_KIT_STOP_MODE=execute` 时每一次 Stop（包括 `stop_hook_active`）都重跑 `run-checks` + `verify`。模式只由运行 Agent 的进程环境决定，目前没有项目级配置。两种模式下每次 Stop 都把观察（mode、allow/block、原因、改动指纹）记进该会话的 lifecycle 记录；thin 放行时把它接受的戳证据绑定到该会话，所以默认安装也能证明门禁生效。记录不移动 manual 证据的 latest 指针，不改变下一次 Stop 读取哪份戳；没有 SessionStart 的会话不记录。SessionStart 新建会话时同样不移动这个指针：会话开始前已 accepted、且指纹仍覆盖当前改动的 deliver 戳继续有效（worktree 戳与 task 戳指纹一致时可通用）。拦截文案里的 `deliver --repo` 写被门禁的 target 绝对路径，避免 Agent 在嵌套 target 目录下跑错 target。deliver / evidence 读取的戳也按 target 区分，嵌套 target 不会读到外层 target 的戳。Claude Code / Codex 输出 JSON `{"decision":"block","reason":"..."}`；Cursor 输出 JSON `followup_message`。Cursor 的 aborted/error 停止不阻断。共享 runner 固定到安装时的 harness-kit 版本（本地开发可用 `HARNESS_KIT_CMD` 覆盖），避免 `latest` 在同一任务中漂移；它用 `npx --prefer-offline` 调用，钉住的版本已在缓存时不再访问 registry。
 

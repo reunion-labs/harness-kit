@@ -225,3 +225,15 @@ test("onboard and check-loop cover the 0.8.2 fixes", () => {
   assert.match(loop, /`record\.kind: agent-deliver`/);
   assert.doesNotMatch(loop, /顶层的 `agent: manual` 只说明/);
 });
+
+test("onboard and check-loop place the CI gate after the local loop", () => {
+  const onboard = captureStdout(onboardCmd).out;
+  // Onboarding leaves CI to the team, but says what a CI job runs when asked.
+  assert.match(onboard, /接入时不改 CI，也不要指示用户修改 CI/);
+  assert.match(onboard, /`npx -y "@erzhe\/harness-kit@<版本>" ci`，版本从 `\.agents\/harness\.lock\.json` 读/);
+  assert.match(onboard, /退出码 0 通过 \/ 1 改动没通过 \/ 2 配置或环境错误/);
+  assert.match(onboard, /只限 manifest 里当作 check 用到的 capability；setup、启动器、发布脚本不算/);
+  const loop = captureStdout(checkLoopCmd).out;
+  assert.match(loop, /合码前的门禁是 MR \/ PR 上的 `harness-kit ci`/);
+  assert.match(loop, /本地靠 waiver 放过的缺口在 CI 里仍会失败/);
+});
