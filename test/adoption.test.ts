@@ -913,7 +913,7 @@ test("bare mentions next to CJK punctuation are guidance; scheme-less host names
     join(repo, "AGENTS.md"),
     "# 规则\n\n- 模板见 knowledge/templates/action.md、术语见（knowledge/glossary.md）。\n" +
       "- 缺失的 knowledge/missing.md，以及 **docs/bold-missing.md**。\n" +
-      "- 接口域名 genai-sg-og.tiktok-row.org，文档 docs.example.com/guide.md。\n",
+      "- 接口域名 api-sg-edge.example.org，文档 docs.example.com/guide.md。\n",
   );
   captureLegacyEntries(repo);
   const metadata = prepareAdoptionCandidate(repo, join(external, "candidate"));

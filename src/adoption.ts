@@ -591,7 +591,7 @@ const MENTION_REFERENCE = new RegExp(
 );
 
 /**
- * A scheme-less URL such as `genai-sg-og.example-row.org` or
+ * A scheme-less URL such as `api-sg-edge.example.org` or
  * `docs.example.com/guide.md`: its first segment is a host name with at least
  * three labels. `.org` is also an Org-mode extension, so only an unresolved
  * mention is dropped this way; a real file of that name still resolves.
